@@ -1,0 +1,10 @@
+# Laya sidecar dependencies for python/laya_worker.py.
+#
+# Upstream floor: Python 3.10+, transformers>=5, torch>=2.14. Install these
+# first (or let pip resolve them transitively below) and match the wheels to
+# the machine:
+#   * CPU-only installs are supported but slower; use the CPU wheel index for
+#     torch and leave --device unset (auto-detect) or set it to "cpu".
+#   * CUDA/MPS installs should use the platform-specific torch wheels before
+#     installing laya.
+laya

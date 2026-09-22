@@ -1,0 +1,68 @@
+{
+  "$comment": "Example omp class-router config. Copy to <project>/.omp/class-router.json (project scope wins) or ~/.omp/class-router.json (global scope). Every key is optional; omitted keys keep the defaults documented in README.md.",
+  "enabled": true,
+  "backend": "jev",
+  "dryRun": false,
+  "notify": true,
+  "applyTo": "main",
+  "jev": {
+    "endpoint": "https://api.typesafe.ai/v1/systemone",
+    "model": "jev-latest",
+    "apiKeyEnvVar": "TYPESAFE_API_KEY",
+    "timeoutMs": 3000
+  },
+  "laya": {
+    "transport": "python",
+    "endpoint": "",
+    "apiKeyEnvVar": "",
+    "pythonBin": "python3",
+    "workerScript": "python/laya_worker.py",
+    "repo": "convaiinnovations/laya",
+    "subfolder": null,
+    "device": null,
+    "router": true,
+    "preload": true,
+    "timeoutMs": 4000,
+    "warmupTimeoutMs": 600000,
+    "hfTokenEnvVar": "HF_TOKEN"
+  },
+  "routing": {
+    "questions": {
+      "task_complexity": {
+        "type": "choice",
+        "instructions": "How demanding is this request for an AI coding agent?",
+        "criteria": {
+          "trivial": "a single lookup, rename, or one-line answer; no exploration",
+          "standard": "a normal multi-step edit or investigation inside one or two files",
+          "hard": "large refactor, cross-cutting design, deep debugging, or long multi-file reasoning"
+        }
+      },
+      "needs_plan": {
+        "type": "noul",
+        "instructions": "Does this request need an explicit plan before any edit?",
+        "criteria": {
+          "true": "the change spans modules, migrations, or public interfaces",
+          "false": "the change is local and reversible"
+        }
+      }
+    },
+    "primaryQuestion": "task_complexity",
+    "modelMapping": {
+      "trivial": "@smol",
+      "standard": "@default",
+      "hard": "@slow"
+    },
+    "fallbackChains": {
+      "@smol": ["@smol", "@default"],
+      "@default": ["@default", "@slow"],
+      "@slow": ["@slow", "@default"]
+    },
+    "confidenceThreshold": 0.5,
+    "defaultCategory": "standard"
+  },
+  "circuitBreaker": {
+    "failureThreshold": 3,
+    "cooldownMs": 120000,
+    "halfOpenMaxTrials": 1
+  }
+}

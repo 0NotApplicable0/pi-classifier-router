@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Laya sidecar worker: NDJSON request/response over stdio.
+
+stdout carries exactly one JSON object per line and nothing else, so the
+TypeScript client can parse strictly; every diagnostic (including warnings and
+progress) goes to stderr. Module-level state keeps the checkpoints loaded across
+requests.
+
+Protocol
+    request  {"id": <int>, "op": "predict"|"ping"|"preload"|"shutdown", ...}
+    reply    {"id": <int>, "ok": true,  "result": {...}}
+           | {"id": <int>, "ok": false, "error": "...", "kind": "unavailable"|"timeout"|"protocol"}
+    event    {"event": "ready", "version": "...", "loaded": ["english", ...]}
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import traceback
+
+
+def emit(payload: dict) -> None:
+    """Write one JSON line and flush immediately (the client is line-driven)."""
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+try:
+    import laya
+except Exception as exc:  # A missing or broken install must not look like a protocol fault.
+    emit({"event": "error", "error": f"laya import failed: {exc!r}", "kind": "unavailable"})
+    print("laya_worker: could not import laya", file=sys.stderr)
+    print(traceback.format_exc(), file=sys.stderr)
+    sys.stderr.flush()
+    raise SystemExit(2)
+
+
+STATE = {"agent": None, "loaded": []}
+
+
+def describe_loaded(agent, fallback: str | None) -> list[str]:
+    """Best-effort checkpoint names, for the ready/preload/ping payloads."""
+    for attr in ("loaded", "checkpoints", "loaded_checkpoints", "checkpoint_names"):
+        value = getattr(agent, attr, None)
+        if isinstance(value, dict) and value:
+            return [str(key) for key in value]
+        if isinstance(value, (list, tuple)) and value:
+            return [str(item) for item in value]
+    return [fallback] if fallback else []
+
+
+def ensure_agent(args) -> object:
+    """Load the checkpoints once; later calls reuse the module-level agent."""
+    if STATE["agent"] is not None:
+        return STATE["agent"]
+    if args.router:
+        kwargs: dict = {"preload": args.preload}
+        if args.device:
+            kwargs["device"] = args.device
+        try:
+            agent = laya.Router(max_loaded=args.max_loaded, **kwargs)
+        except TypeError:
+            # Older Router builds do not take max_loaded.
+            agent = laya.Router(**kwargs)
+    else:
+        kwargs = {"subfolder": args.subfolder or None}
+        if args.device:
+            kwargs["device"] = args.device
+        agent = laya.load(args.repo, **kwargs)
+    STATE["agent"] = agent
+    return agent
+
+
+def normalize(reply) -> dict:
+    """Reduce a backend reply to `{model?, answers, usage?}`."""
+    if isinstance(reply, dict):
+        model = reply.get("model")
+        answers = reply.get("answers")
+        usage = reply.get("usage")
+    else:
+        model = getattr(reply, "model", None)
+        answers = getattr(reply, "answers", None)
+        usage = getattr(reply, "usage", None)
+    if not isinstance(answers, dict):
+        raise ValueError("laya returned no answers mapping")
+    result: dict = {"answers": answers}
+    if isinstance(model, str):
+        result["model"] = model
+    if isinstance(usage, dict):
+        result["usage"] = usage
+    return result
+
+
+def error_kind(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, (ImportError, RuntimeError)):
+        return "unavailable"
+    return "protocol"
+
+
+def handle(request: dict, args) -> dict | None:
+    """Serve one request; returns the reply, or None for shutdown."""
+    rid = request.get("id")
+    op = request.get("op")
+
+    if op == "predict":
+        agent = ensure_agent(args)
+        state = request.get("state")
+        questions = request.get("questions")
+        model = request.get("model")
+        reply = agent.predict(state, questions, model=model) if model else agent.predict(state, questions)
+        return {"id": rid, "ok": True, "result": normalize(reply)}
+
+    if op == "ping":
+        return {
+            "id": rid,
+            "ok": True,
+            "result": {
+                "laya": True,
+                "version": getattr(laya, "__version__", "unknown"),
+                "loaded": list(STATE["loaded"]),
+            },
+        }
+
+    if op == "preload":
+        agent = ensure_agent(args)
+        STATE["loaded"] = describe_loaded(agent, args.subfolder or "english")
+        return {"id": rid, "ok": True, "result": {"loaded": list(STATE["loaded"])}}
+
+    if op == "shutdown":
+        return {"id": rid, "ok": True, "result": {"bye": True}}
+
+    return {"id": rid, "ok": False, "error": f"unknown op: {op!r}", "kind": "protocol"}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="laya_worker", description="Laya System One sidecar")
+    parser.add_argument("--repo", required=True, help="Hugging Face repo bundling the checkpoints")
+    parser.add_argument("--subfolder", default="", help="checkpoint subfolder; empty means the English root")
+    parser.add_argument("--device", default="", help="torch device; empty means auto-detect")
+    parser.add_argument("--router", action="store_true", help="serve through laya.Router")
+    parser.add_argument("--preload", action="store_true", help="load checkpoints before serving")
+    parser.add_argument("--max-loaded", type=int, default=1, help="checkpoint budget passed to laya.Router")
+    args = parser.parse_args()
+
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass  # flush() after every line is the real guarantee.
+
+    if args.preload:
+        ensure_agent(args)
+        STATE["loaded"] = describe_loaded(STATE["agent"], args.subfolder or "english")
+    else:
+        STATE["loaded"] = []
+
+    emit(
+        {
+            "event": "ready",
+            "version": getattr(laya, "__version__", "unknown"),
+            "loaded": list(STATE["loaded"]),
+        }
+    )
+
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except Exception as exc:
+            print(f"laya_worker: ignoring unparseable request line ({exc})", file=sys.stderr)
+            continue
+        if not isinstance(request, dict):
+            print("laya_worker: ignoring non-object request", file=sys.stderr)
+            continue
+
+        try:
+            reply = handle(request, args)
+            if reply is not None:
+                emit(reply)
+        except BaseException as exc:
+            print(traceback.format_exc(), file=sys.stderr)
+            emit(
+                {
+                    "id": request.get("id"),
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "kind": error_kind(exc),
+                }
+            )
+
+        if request.get("op") == "shutdown":
+            sys.stdout.flush()
+            return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

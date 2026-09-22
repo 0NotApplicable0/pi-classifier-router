@@ -1,0 +1,47 @@
+{
+  "backend": "jev",
+  "jev": {
+    "endpoint": "https://api.typesafe.ai/v1/systemone",
+    "model": "jev-latest",
+    "apiKeyEnvVar": "TYPESAFE_API_KEY",
+    "timeoutMs": 3000
+  },
+  "routing": {
+    "questions": {
+      "task_complexity": {
+        "type": "choice",
+        "instructions": "How demanding is this request for an AI coding agent?",
+        "criteria": {
+          "trivial": "a single lookup, rename, or one-line answer; no exploration",
+          "standard": "a normal multi-step edit or investigation inside one or two files",
+          "hard": "large refactor, cross-cutting design, deep debugging, or long multi-file reasoning"
+        }
+      }
+    },
+    "primaryQuestion": "task_complexity",
+    "modelMapping": {
+      "trivial": "fireworks/accounts/fireworks/routers/glm-5p3-fast",
+      "standard": "fireworks/accounts/fireworks/routers/glm-5p3-fast",
+      "hard": "fireworks/accounts/fireworks/routers/deepseek-pro-latest"
+    },
+    "fallbackChains": {
+      "fireworks/accounts/fireworks/routers/glm-5p3-fast": [
+        "fireworks/accounts/fireworks/routers/glm-5p3-fast",
+        "fireworks/accounts/fireworks/routers/deepseek-flash-latest"
+      ],
+      "fireworks/accounts/fireworks/routers/deepseek-pro-latest": [
+        "fireworks/accounts/fireworks/routers/deepseek-pro-latest",
+        "fireworks/accounts/fireworks/routers/glm-5p3-fast"
+      ]
+    },
+    "confidenceThreshold": 0.5,
+    "defaultCategory": "standard"
+  },
+  "circuitBreaker": {
+    "failureThreshold": 3,
+    "cooldownMs": 120000,
+    "halfOpenMaxTrials": 1
+  },
+  "notify": true,
+  "applyTo": "all"
+}

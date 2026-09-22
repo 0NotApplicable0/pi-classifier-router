@@ -1,0 +1,246 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { configPaths, defaultConfig, loadConfig } from "../src/config.ts";
+
+interface CleanupContext {
+  after(fn: () => void): void;
+}
+
+function writeConfig(base: string, contents: string): void {
+  const full = path.join(base, ".omp", "class-router.json");
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, contents);
+}
+
+/** A scratch cwd/home pair; files are written under `<root>/<name>/.omp`. */
+function workspace(ctx: CleanupContext, files: { project?: string; global?: string }): { cwd: string; home: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "class-router-"));
+  ctx.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cwd = path.join(root, "project");
+  const home = path.join(root, "home");
+  if (files.project !== undefined) writeConfig(cwd, files.project);
+  if (files.global !== undefined) writeConfig(home, files.global);
+  return { cwd, home };
+}
+
+test("configPaths lists project before global", () => {
+  const paths = configPaths("/work/repo", "/home/me");
+  assert.deepEqual(paths, [
+    { path: path.join("/work/repo", ".omp", "class-router.json"), scope: "project" },
+    { path: path.join("/home/me", ".omp", "class-router.json"), scope: "global" },
+  ]);
+});
+
+test("missing config everywhere yields nulls without error", (t) => {
+  const { cwd, home } = workspace(t, {});
+  const result = loadConfig(cwd, home);
+  assert.equal(result.config, null);
+  assert.equal(result.source, null);
+  assert.deepEqual(result.errors, []);
+});
+
+test("a project config overrides a global one", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: JSON.stringify({ enabled: false }),
+    global: JSON.stringify({ enabled: true, backend: "laya" }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.enabled, false);
+  assert.equal(result.config.backend, "jev");
+  assert.equal(result.source?.scope, "project");
+  assert.deepEqual(result.errors, []);
+});
+
+test("malformed project JSON reports an error and falls through to global", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: "{ this is not json",
+    global: JSON.stringify({ backend: "laya" }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.backend, "laya");
+  assert.equal(result.source?.scope, "global");
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0]!, /invalid JSON/);
+});
+
+test("a partial file merges over the defaults", (t) => {
+  const { cwd, home } = workspace(t, { project: JSON.stringify({ backend: "laya" }) });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.backend, "laya");
+  assert.equal(result.config.routing.primaryQuestion, "task_complexity");
+  assert.equal(result.config.routing.confidenceThreshold, 0.5);
+  assert.equal(result.config.routing.modelMapping.hard, "@slow");
+  assert.deepEqual(result.config.routing.fallbackChains["@smol"], ["@smol", "@default"]);
+  assert.equal(result.config.circuitBreaker.failureThreshold, 3);
+  const question = result.config.routing.questions.task_complexity;
+  assert.ok(question);
+  assert.equal(question.type, "choice");
+});
+
+test("defaultConfig is complete and internally consistent", () => {
+  const config = defaultConfig();
+  assert.equal(config.backend, "jev");
+  assert.equal(config.applyTo, "all");
+  assert.equal(config.routing.primaryQuestion, "task_complexity");
+  const question = config.routing.questions[config.routing.primaryQuestion];
+  assert.ok(question);
+  assert.equal(question.type, "choice");
+  // A second call must not share mutable state with the first.
+  assert.notEqual(defaultConfig().routing, config.routing);
+});
+
+const INVALID_INPUTS: Array<[string, unknown]> = [
+  ["an unknown backend", { backend: "bogus" }],
+  ["an empty question set", { routing: { questions: {} } }],
+  ["a non-object question set", { routing: { questions: [] } }],
+  ["a primaryQuestion absent from questions", { routing: { primaryQuestion: "nope" } }],
+  [
+    "a primaryQuestion that is not a choice question",
+    { routing: { questions: { task_complexity: { type: "noul", instructions: "yes or no?" } } } },
+  ],
+  ["an empty modelMapping", { routing: { modelMapping: {} } }],
+  ["a non-string modelMapping value", { routing: { modelMapping: { trivial: 42 } } }],
+  ["a confidenceThreshold above 1", { routing: { confidenceThreshold: 2 } }],
+  ["a negative confidenceThreshold", { routing: { confidenceThreshold: -0.1 } }],
+  ["a circuit breaker failureThreshold below 1", { circuitBreaker: { failureThreshold: 0 } }],
+  ["a negative circuit breaker cooldownMs", { circuitBreaker: { cooldownMs: -1 } }],
+  ["a circuit breaker halfOpenMaxTrials below 1", { circuitBreaker: { halfOpenMaxTrials: 0 } }],
+  ["a non-positive jev timeoutMs", { jev: { timeoutMs: 0 } }],
+  ["a non-positive laya timeoutMs", { laya: { timeoutMs: 0 } }],
+  ["a fallback chain that is not an array", { routing: { fallbackChains: { "@smol": "@smol" } } }],
+  ["a fallback chain containing an empty entry", { routing: { fallbackChains: { "@smol": ["@smol", "  "] } } }],
+  ["a fallback chain containing a non-string", { routing: { fallbackChains: { "@smol": ["@smol", 7] } } }],
+];
+
+for (const [label, input] of INVALID_INPUTS) {
+  test(`rejects ${label}`, (t) => {
+    const { cwd, home } = workspace(t, { project: JSON.stringify(input) });
+    const result = loadConfig(cwd, home);
+    assert.equal(result.config, null);
+    assert.equal(result.source, null);
+    assert.ok(result.errors.length > 0);
+  });
+}
+
+test("rejects a primaryQuestion pointing at a noul question even when other questions exist", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: JSON.stringify({
+      routing: {
+        primaryQuestion: "is_hard",
+        questions: {
+          is_hard: { type: "noul", instructions: "Is this hard?" },
+          task_complexity: { type: "choice", instructions: "Complexity?", criteria: { trivial: null, hard: null } },
+        },
+        modelMapping: { trivial: "@smol", hard: "@slow" },
+      },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.equal(result.config, null);
+  assert.match(result.errors.join("\n"), /is_hard/);
+});
+
+test("a valid file with per-key routing overrides keeps sibling defaults", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: JSON.stringify({
+      routing: {
+        modelMapping: { hard: "@review" },
+        fallbackChains: { "@review": ["@review", "@slow"] },
+      },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.routing.modelMapping.hard, "@review");
+  assert.equal(result.config.routing.modelMapping.trivial, "@smol");
+  assert.deepEqual(result.config.routing.fallbackChains["@review"], ["@review", "@slow"]);
+  assert.deepEqual(result.config.routing.fallbackChains["@smol"], ["@smol", "@default"]);
+});
+
+test("laya transport defaults to python with blank endpoint and token variable", () => {
+  const config = defaultConfig();
+  assert.equal(config.laya.transport, "python");
+  assert.equal(config.laya.endpoint, "");
+  assert.equal(config.laya.apiKeyEnvVar, "");
+});
+
+test("a partial file without laya.transport keeps the python default", (t) => {
+  const { cwd, home } = workspace(t, { project: JSON.stringify({ backend: "laya", laya: { device: "cpu" } }) });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.laya.transport, "python");
+  assert.equal(result.config.laya.device, "cpu");
+  assert.equal(result.config.laya.endpoint, "");
+});
+
+const INVALID_TRANSPORT_INPUTS: Array<[string, unknown]> = [
+  ["an unknown transport", { laya: { transport: "grpc" } }],
+  ["a non-string transport", { laya: { transport: 7 } }],
+  [
+    "an http transport with no endpoint",
+    { laya: { transport: "http" } },
+  ],
+  [
+    "an http transport with a blank endpoint",
+    { laya: { transport: "http", endpoint: "   " } },
+  ],
+  [
+    "an http transport with a non-http endpoint",
+    { laya: { transport: "http", endpoint: "ftp://gpu.example/classify" } },
+  ],
+  [
+    "an http transport with a relative endpoint",
+    { laya: { transport: "http", endpoint: "/classify" } },
+  ],
+];
+
+for (const [label, input] of INVALID_TRANSPORT_INPUTS) {
+  test(`rejects ${label}`, (t) => {
+    const { cwd, home } = workspace(t, { project: JSON.stringify(input) });
+    const result = loadConfig(cwd, home);
+    assert.equal(result.config, null);
+    assert.equal(result.source, null);
+    assert.ok(result.errors.length > 0);
+  });
+}
+
+test("accepts an http transport with a valid endpoint and keeps python-only defaults", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: JSON.stringify({
+      backend: "laya",
+      laya: { transport: "http", endpoint: "https://gpu.example/v1/systemone" },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.laya.transport, "http");
+  assert.equal(result.config.laya.endpoint, "https://gpu.example/v1/systemone");
+  assert.equal(result.config.laya.pythonBin, "python3");
+  assert.equal(result.config.laya.workerScript, "python/laya_worker.py");
+  assert.equal(result.config.laya.repo, "convaiinnovations/laya");
+  assert.equal(result.config.laya.preload, true);
+  assert.equal(result.config.laya.warmupTimeoutMs, 600000);
+  assert.equal(result.config.laya.hfTokenEnvVar, "HF_TOKEN");
+  // A blank token variable is allowed; it just means no Authorization header.
+  assert.equal(result.config.laya.apiKeyEnvVar, "");
+});
+
+test("an http transport endpoint may be http or https and needs no token variable", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: JSON.stringify({
+      backend: "laya",
+      laya: { transport: "http", endpoint: "http://127.0.0.1:8080/classify" },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.config.laya.endpoint, "http://127.0.0.1:8080/classify");
+  assert.equal(result.config.laya.apiKeyEnvVar, "");
+});
