@@ -43,5 +43,13 @@
     "@earendil-works/pi-coding-agent": "^0.87.1",
     "@types/node": "^24.13.6",
     "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
   }
 }
