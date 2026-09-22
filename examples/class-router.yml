@@ -1,0 +1,44 @@
+# YAML form of the configuration. Identical in meaning to class-router.json;
+# use whichever you prefer. Copy to ~/.omp/class-router.yml (global) or
+# <project>/.omp/class-router.yml (project-local, which wins).
+#
+# This is the extension's own config file, unrelated to omp's
+# ~/.omp/agent/config.yml or pi's ~/.pi/agent/settings.json.
+
+backend: jev
+
+jev:
+  endpoint: https://api.typesafe.ai/v1/systemone
+  model: jev-latest
+  apiKeyEnvVar: TYPESAFE_API_KEY
+  timeoutMs: 3000
+
+routing:
+  # Must name a choice question: score and noul answers cannot name a category.
+  primaryQuestion: task_complexity
+  # Alias specs are omp-only; on pi use concrete provider/id specs, e.g.
+  # fireworks/accounts/fireworks/routers/deepseek-pro-latest
+  modelMapping:
+    trivial: "@smol"
+    standard: "@default"
+    hard: "@slow"
+  fallbackChains:
+    "@smol":
+      - "@smol"
+      - "@default"
+    "@default":
+      - "@default"
+      - "@slow"
+    "@slow":
+      - "@slow"
+      - "@default"
+  confidenceThreshold: 0.5
+  defaultCategory: standard
+
+circuitBreaker:
+  failureThreshold: 3
+  cooldownMs: 120000
+  halfOpenMaxTrials: 1
+
+notify: true
+applyTo: all

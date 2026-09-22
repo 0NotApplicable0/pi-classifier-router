@@ -1,10 +1,11 @@
 /**
  * Config discovery, defaults, merge, and validation.
  *
- * Precedence is project over global; the first existing, parseable, valid file
- * wins. A file that fails to read or parse is reported and skipped, but a file
- * that parses yet violates the contract is rejected outright: silently
- * mis-routing is worse than falling back to the session's own model.
+ * Precedence is project over global; within a scope JSON is preferred over YAML.
+ * The first existing, parseable, valid file wins. A file that fails to read or
+ * parse is reported and skipped, but a file that parses yet violates the
+ * contract is rejected outright: silently mis-routing is worse than falling back
+ * to the session's own model.
  */
 
 import * as fs from "node:fs";
@@ -13,9 +14,12 @@ import * as path from "node:path";
 
 import type { Question, RouterConfig, RouterConfigInput } from "./types.ts";
 
+export type ConfigFormat = "json" | "yaml";
+
 export interface ConfigSource {
   path: string;
   scope: "project" | "global";
+  format: ConfigFormat;
 }
 
 export interface ConfigLoadResult {
@@ -24,12 +28,45 @@ export interface ConfigLoadResult {
   errors: string[];
 }
 
-/** Project config first, global config second. */
+/** Parses one YAML document. Supplied by the host, since only Bun has one. */
+export type YamlParser = (text: string) => unknown;
+
+/**
+ * Bun ships a YAML parser; Node does not. Absent a parser, YAML candidates are
+ * reported as errors rather than silently ignored, so a `.yml` config that is
+ * being skipped is visible.
+ */
+export function defaultYamlParser(): YamlParser | null {
+  const scope: unknown = globalThis;
+  if (typeof scope !== "object" || scope === null || !("Bun" in scope)) return null;
+  const bun = scope.Bun;
+  if (typeof bun !== "object" || bun === null || !("YAML" in bun)) return null;
+  const yaml = bun.YAML;
+  if (typeof yaml !== "object" || yaml === null || !("parse" in yaml)) return null;
+  const parse = yaml.parse;
+  if (typeof parse !== "function") return null;
+  // Verified callable just above; only its signature is unknowable statically.
+  const call = parse as (value: string) => unknown;
+  return (text: string) => call(text);
+}
+
+/** Candidate files per scope, in precedence order. */
+const CANDIDATES: ReadonlyArray<{ name: string; format: ConfigFormat }> = [
+  { name: "class-router.json", format: "json" },
+  { name: "class-router.yml", format: "yaml" },
+  { name: "class-router.yaml", format: "yaml" },
+];
+
+/** Every candidate, project first, JSON before YAML, then global. */
 export function configPaths(cwd: string, home: string): ConfigSource[] {
-  return [
-    { path: path.join(cwd, ".omp", "class-router.json"), scope: "project" },
-    { path: path.join(home, ".omp", "class-router.json"), scope: "global" },
-  ];
+  const sources: ConfigSource[] = [];
+  for (const scope of ["project", "global"] as const) {
+    const base = scope === "project" ? cwd : home;
+    for (const candidate of CANDIDATES) {
+      sources.push({ path: path.join(base, ".omp", candidate.name), scope, format: candidate.format });
+    }
+  }
+  return sources;
 }
 
 /** A complete, valid configuration. Fresh objects on every call. */
@@ -242,6 +279,7 @@ export function loadConfig(
   cwd: string,
   home: string = os.homedir(),
   env: Record<string, string | undefined> = process.env,
+  yaml: YamlParser | null = defaultYamlParser(),
 ): ConfigLoadResult {
   void env;
   const errors: string[] = [];
@@ -259,16 +297,33 @@ export function loadConfig(
     }
 
     let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push(`${source.scope} config ${source.path}: invalid JSON: ${message}`);
-      continue;
+    if (source.format === "yaml") {
+      if (yaml === null) {
+        errors.push(
+          `${source.scope} config ${source.path}: YAML config needs a YAML parser and this host has none ` +
+            `(only Bun provides one); use class-router.json instead`,
+        );
+        continue;
+      }
+      try {
+        parsed = yaml(raw);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${source.scope} config ${source.path}: invalid YAML: ${message}`);
+        continue;
+      }
+    } else {
+      try {
+        parsed = JSON.parse(raw);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${source.scope} config ${source.path}: invalid JSON: ${message}`);
+        continue;
+      }
     }
 
     if (!isPlainObject(parsed)) {
-      errors.push(`${source.scope} config ${source.path}: expected a JSON object at the top level`);
+      errors.push(`${source.scope} config ${source.path}: expected a ${source.format === "yaml" ? "YAML" : "JSON"} object at the top level`);
       continue;
     }
 

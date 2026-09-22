@@ -4,34 +4,44 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { configPaths, defaultConfig, loadConfig } from "../src/config.ts";
+import { configPaths, defaultConfig, defaultYamlParser, loadConfig } from "../src/config.ts";
+import type { YamlParser } from "../src/config.ts";
 
 interface CleanupContext {
   after(fn: () => void): void;
 }
 
-function writeConfig(base: string, contents: string): void {
-  const full = path.join(base, ".omp", "class-router.json");
+function writeConfig(base: string, contents: string, name = "class-router.json"): void {
+  const full = path.join(base, ".omp", name);
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, contents);
 }
 
 /** A scratch cwd/home pair; files are written under `<root>/<name>/.omp`. */
-function workspace(ctx: CleanupContext, files: { project?: string; global?: string }): { cwd: string; home: string } {
+function workspace(
+  ctx: CleanupContext,
+  files: { project?: string; global?: string; projectYaml?: string; globalYaml?: string },
+): { cwd: string; home: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "class-router-"));
   ctx.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const cwd = path.join(root, "project");
   const home = path.join(root, "home");
   if (files.project !== undefined) writeConfig(cwd, files.project);
   if (files.global !== undefined) writeConfig(home, files.global);
+  if (files.projectYaml !== undefined) writeConfig(cwd, files.projectYaml, "class-router.yml");
+  if (files.globalYaml !== undefined) writeConfig(home, files.globalYaml, "class-router.yml");
   return { cwd, home };
 }
 
-test("configPaths lists project before global", () => {
+test("configPaths lists project before global, JSON before YAML", () => {
   const paths = configPaths("/work/repo", "/home/me");
   assert.deepEqual(paths, [
-    { path: path.join("/work/repo", ".omp", "class-router.json"), scope: "project" },
-    { path: path.join("/home/me", ".omp", "class-router.json"), scope: "global" },
+    { path: path.join("/work/repo", ".omp", "class-router.json"), scope: "project", format: "json" },
+    { path: path.join("/work/repo", ".omp", "class-router.yml"), scope: "project", format: "yaml" },
+    { path: path.join("/work/repo", ".omp", "class-router.yaml"), scope: "project", format: "yaml" },
+    { path: path.join("/home/me", ".omp", "class-router.json"), scope: "global", format: "json" },
+    { path: path.join("/home/me", ".omp", "class-router.yml"), scope: "global", format: "yaml" },
+    { path: path.join("/home/me", ".omp", "class-router.yaml"), scope: "global", format: "yaml" },
   ]);
 });
 
@@ -244,3 +254,123 @@ test("an http transport endpoint may be http or https and needs no token variabl
   assert.equal(result.config.laya.endpoint, "http://127.0.0.1:8080/classify");
   assert.equal(result.config.laya.apiKeyEnvVar, "");
 });
+// ---------------------------------------------------------------------------
+// YAML config files
+//
+// Only Bun ships a YAML parser, so the tests that exercise the real parser skip
+// on Node. The precedence and error-path tests inject a stub parser, so the
+// candidate selection logic they cover runs on every host.
+// ---------------------------------------------------------------------------
+
+/** A stub standing in for the host parser; records what it was handed. */
+function stubYaml(value: unknown): { parse: YamlParser; seen: string[] } {
+  const seen: string[] = [];
+  return {
+    seen,
+    parse: (text: string) => {
+      seen.push(text);
+      return value;
+    },
+  };
+}
+
+test("a YAML candidate is used when no JSON file exists", (t) => {
+  const { cwd, home } = workspace(t, { globalYaml: "backend: laya\n" });
+  const stub = stubYaml({ enabled: false });
+  const result = loadConfig(cwd, home, process.env, stub.parse);
+  assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.config.enabled, false);
+  assert.equal(result.source?.format, "yaml");
+  assert.equal(result.source?.scope, "global");
+  assert.deepEqual(stub.seen, ["backend: laya\n"]);
+  assert.deepEqual(result.errors, []);
+});
+
+test("JSON wins over YAML within the same scope", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({ enabled: true }),
+    globalYaml: "enabled: false\n",
+  });
+  const stub = stubYaml({ enabled: false });
+  const result = loadConfig(cwd, home, process.env, stub.parse);
+  assert.ok(result.config);
+  assert.equal(result.source?.format, "json");
+  assert.equal(result.config.enabled, true);
+  assert.deepEqual(stub.seen, [], "the YAML candidate must not be parsed once JSON wins");
+});
+
+test("a project YAML file beats a global JSON file", (t) => {
+  const { cwd, home } = workspace(t, {
+    projectYaml: "enabled: false\n",
+    global: JSON.stringify({ enabled: true, backend: "laya" }),
+  });
+  const stub = stubYaml({ enabled: false, backend: "laya" });
+  const result = loadConfig(cwd, home, process.env, stub.parse);
+  assert.ok(result.config);
+  assert.equal(result.source?.scope, "project");
+  assert.equal(result.source?.format, "yaml");
+  assert.equal(result.config.enabled, false);
+});
+
+test("a YAML file with no parser available reports an error rather than being ignored", (t) => {
+  const { cwd, home } = workspace(t, { globalYaml: "enabled: false\n" });
+  const result = loadConfig(cwd, home, process.env, null);
+  assert.equal(result.config, null);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0]!, /YAML config needs a YAML parser/);
+  assert.match(result.errors[0]!, /class-router\.yml/);
+});
+
+test("invalid YAML reports an error and falls through to the next candidate", (t) => {
+  const { cwd, home } = workspace(t, {
+    projectYaml: "!!! not: valid: yaml\n",
+    global: JSON.stringify({ enabled: false }),
+  });
+  const throwing: YamlParser = () => {
+    throw new Error("bad document");
+  };
+  const result = loadConfig(cwd, home, process.env, throwing);
+  assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.source?.scope, "global");
+  assert.equal(result.config.enabled, false);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0]!, /invalid YAML/);
+});
+
+test("a YAML scalar at the top level is rejected", (t) => {
+  const { cwd, home } = workspace(t, { globalYaml: "just a string\n" });
+  const stub = stubYaml("just a string");
+  const result = loadConfig(cwd, home, process.env, stub.parse);
+  assert.equal(result.config, null);
+  assert.match(result.errors[0]!, /expected a YAML object at the top level/);
+});
+
+const hostYaml = defaultYamlParser();
+
+test(
+  "the host parser reads a real YAML document",
+  hostYaml === null ? { skip: "host has no YAML parser (Bun provides one; Node does not)" } : {},
+  (t) => {
+    const { cwd, home } = workspace(t, {
+      globalYaml: [
+        "backend: laya",
+        "enabled: false",
+        "routing:",
+        "  confidenceThreshold: 0.8",
+        "  modelMapping:",
+        "    hard: fireworks/accounts/fireworks/routers/deepseek-pro-latest",
+        "",
+      ].join("\n"),
+    });
+    const result = loadConfig(cwd, home);
+    assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+    assert.equal(result.config.backend, "laya");
+    assert.equal(result.config.enabled, false);
+    assert.equal(result.config.routing.confidenceThreshold, 0.8);
+    assert.equal(
+      result.config.routing.modelMapping["hard"],
+      "fireworks/accounts/fireworks/routers/deepseek-pro-latest",
+    );
+    assert.equal(result.source?.format, "yaml");
+  },
+);

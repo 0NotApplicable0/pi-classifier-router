@@ -25,3 +25,13 @@ verify:
   script:
     - npm run typecheck
     - npm test
+
+# Bun is the runtime both hosts actually use, and it is the only one that ships a
+# YAML parser, so this job is what exercises the .yml/.yaml config path that the
+# Node job skips. The suite needs no dependencies (the type-only imports erase),
+# so there is no install step.
+verify-bun:
+  stage: verify
+  image: oven/bun:1
+  script:
+    - bun test tests/

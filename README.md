@@ -260,17 +260,47 @@ so it is not a drop-in accuracy replacement for a hosted Jev model.
 
 ## Configuration
 
-Config files are JSON and are searched in this order:
+Config files are searched in this order, project before global and JSON before
+YAML:
 
 1. `<project>/.omp/class-router.json`
-2. `~/.omp/class-router.json`
+2. `<project>/.omp/class-router.yml`
+3. `<project>/.omp/class-router.yaml`
+4. `~/.omp/class-router.json`
+5. `~/.omp/class-router.yml`
+6. `~/.omp/class-router.yaml`
+
+Both formats describe exactly the same configuration, so use whichever you
+prefer:
+
+```yaml
+# ~/.omp/class-router.yml
+backend: jev
+routing:
+  confidenceThreshold: 0.7
+  modelMapping:
+    hard: @slow
+```
+
+```json
+{ "backend": "jev", "routing": { "confidenceThreshold": 0.7, "modelMapping": { "hard": "@slow" } } }
+```
+
+YAML is parsed by the host (`Bun.YAML`), which is free because pi and omp are both
+Bun. A YAML file on a host without a parser is reported as an error rather than
+silently skipped, so a `.yml` that is being ignored is always visible.
 
 These paths are literal and identical on both hosts: the extension discovers its
-own config rather than reading host settings. The first existing file that parses
-and validates wins; a project file therefore overrides a global one. A missing
-file everywhere is not an error: built-in defaults apply. A file that cannot be
-read or parsed is reported and the search continues; a file that parses but
-violates the contract is rejected outright
+own config and never reads host settings. In particular this file is **not**
+omp's `~/.omp/agent/config.yml` (that is omp's own settings: `modelRoles`, theme,
+advisor) and not pi's `~/.pi/agent/settings.json`. They sit alongside each other
+and are unrelated.
+
+The first existing file that parses and validates wins; a project file therefore
+overrides a global one, and a `.json` overrides a `.yml` in the same scope. A
+missing file everywhere is not an error: built-in defaults apply. A file that
+cannot be read or parsed is reported and the search continues; a file that parses
+but violates the contract is rejected outright
 (routing falls back to defaults and the errors are notified), because silent
 mis-routing is worse than leaving the model alone.
 
