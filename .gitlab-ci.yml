@@ -1,0 +1,27 @@
+# Verify typecheck and the full test suite on every push.
+#
+# The suite is hermetic: it binds only 127.0.0.1 on an ephemeral port, makes no
+# outbound request, and needs no API key. scripts/smoke-live.mjs is the one
+# deliberate live probe and is NOT run here (it requires TYPESAFE_API_KEY).
+#
+# The Laya sidecar tests self-skip when python3 is absent, which is the case in
+# this image, so no Python setup is needed.
+
+image: node:24
+
+stages:
+  - verify
+
+verify:
+  stage: verify
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npm run typecheck
+    - npm test

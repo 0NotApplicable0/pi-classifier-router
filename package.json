@@ -2,6 +2,14 @@
   "name": "@ejstembler/pi-classifier-router",
   "version": "1.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/ejstembler/pi-classifier-router.git"
+  },
+  "homepage": "https://gitlab.com/ejstembler/pi-classifier-router#readme",
+  "bugs": {
+    "url": "https://gitlab.com/ejstembler/pi-classifier-router/-/issues"
+  },
   "description": "Classifier-driven model router for pi and Oh My Pi (omp): routes each prompt to a model using Jev (TypeSafe) or Laya typed decisions, with circuit breaking and fallback chains",
   "main": "src/index.ts",
   "type": "module",

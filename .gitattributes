@@ -1,0 +1,8 @@
+# Normalize line endings so a contributor on Windows cannot commit CRLF churn.
+* text=auto eol=lf
+
+# Binary assets and lockfiles are not text-normalized.
+*.png binary
+*.jpg binary
+*.woff2 binary
+package-lock.json -text

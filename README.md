@@ -1,5 +1,9 @@
 # @ejstembler/pi-classifier-router
 
+[![pipeline](https://gitlab.com/ejstembler/pi-classifier-router/badges/main/pipeline.svg)](https://gitlab.com/ejstembler/pi-classifier-router/-/pipelines)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](package.json)
+
 An extension for pi and Oh My Pi (omp) that classifies each incoming prompt with a
 System-One model and routes the session to the model that fits it.
 
