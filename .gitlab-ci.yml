@@ -11,6 +11,7 @@ image: node:24
 
 stages:
   - verify
+  - release
 
 verify:
   stage: verify
@@ -35,3 +36,43 @@ verify-bun:
   image: oven/bun:1
   script:
     - bun test tests/
+
+# ---------------------------------------------------------------------------
+# Release: pushing a vX.Y.Z tag creates the GitLab release automatically, after
+# both verify jobs pass on the tag pipeline. The notes are generated from the
+# commit messages since the previous tag (scripts/release-notes.mjs). npm
+# publishing stays manual.
+# ---------------------------------------------------------------------------
+
+.on-version-tag:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
+release-notes:
+  stage: release
+  extends: .on-version-tag
+  variables:
+    # The notes walk history back to the previous tag, so no shallow clone.
+    GIT_DEPTH: 0
+  script:
+    # Tag pipelines fetch only their own tag; the previous one is needed too.
+    - git fetch --tags --force --quiet
+    - node scripts/release-notes.mjs "$CI_COMMIT_TAG" > release-notes.md
+    - cat release-notes.md
+  artifacts:
+    paths:
+      - release-notes.md
+    expire_in: 1 week
+
+release:
+  stage: release
+  extends: .on-version-tag
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  needs:
+    - release-notes
+  script:
+    - echo "Creating release $CI_COMMIT_TAG"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: $CI_COMMIT_TAG
+    description: ./release-notes.md
