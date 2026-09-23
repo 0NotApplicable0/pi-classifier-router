@@ -143,6 +143,8 @@ const INVALID_INPUTS: Array<[string, unknown]> = [
   ["a non-finite breaker cooldown", { circuitBreaker: { cooldownMs: null } }],
   ["a numeric defaultCategory", { routing: { defaultCategory: 3 } }],
   ["an empty primaryQuestion", { routing: { primaryQuestion: "" } }],
+  ["a maxPromptChars below the minimum", { routing: { maxPromptChars: 50 } }],
+  ["a fractional maxPromptChars", { routing: { maxPromptChars: 1000.5 } }],
   [
     "a secondary question with an unknown type",
     {
@@ -660,4 +662,12 @@ test("router-only checks do not apply where the settings are not used", (t) => {
     const result = loadConfig(cwd, home);
     assert.ok(result.config, `errors for ${JSON.stringify(input)}: ${JSON.stringify(result.errors)}`);
   }
+});
+
+test("maxPromptChars defaults to 8000 and accepts null for no cap", (t) => {
+  assert.equal(defaultConfig().routing.maxPromptChars, 8000);
+  const { cwd, home } = workspace(t, { global: JSON.stringify({ routing: { maxPromptChars: null } }) });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.config.routing.maxPromptChars, null);
 });

@@ -131,6 +131,7 @@ export function defaultConfig(): RouterConfig {
       },
       confidenceThreshold: 0.5,
       defaultCategory: "standard",
+      maxPromptChars: 8000,
     },
     circuitBreaker: { failureThreshold: 3, cooldownMs: 120000, halfOpenMaxTrials: 1 },
     dryRun: false,
@@ -138,6 +139,9 @@ export function defaultConfig(): RouterConfig {
     applyTo: "all",
   };
 }
+
+/** Below this a clipped prompt is mostly omission marker. */
+const MIN_PROMPT_CHARS = 200;
 
 /** Every key the config understands, per section, derived from the defaults. */
 function knownKeys(): Record<string, readonly string[]> {
@@ -265,6 +269,7 @@ function mergeConfig(base: RouterConfig, input: RouterConfigInput): RouterConfig
     routing: {
       primaryQuestion: inputRouting?.primaryQuestion ?? routing.primaryQuestion,
       confidenceThreshold: inputRouting?.confidenceThreshold ?? routing.confidenceThreshold,
+      maxPromptChars: inputRouting?.maxPromptChars !== undefined ? inputRouting.maxPromptChars : routing.maxPromptChars,
       // `null` is a meaningful value here, so an explicit null must survive `??`.
       defaultCategory:
         inputRouting?.defaultCategory !== undefined ? inputRouting.defaultCategory : routing.defaultCategory,
@@ -379,6 +384,16 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
           "so the fallback can never be applied",
       );
     }
+  }
+
+  const maxPromptChars: unknown = routing.maxPromptChars;
+  if (
+    maxPromptChars !== null &&
+    !(Number.isInteger(maxPromptChars) && (maxPromptChars as number) >= MIN_PROMPT_CHARS)
+  ) {
+    errors.push(
+      `routing.maxPromptChars must be an integer >= ${MIN_PROMPT_CHARS} or null, got ${describe(maxPromptChars)}`,
+    );
   }
 
   const threshold = routing.confidenceThreshold;

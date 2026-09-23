@@ -21,7 +21,7 @@ import * as path from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import classRouter, { classifyFailure } from "../src/index.ts";
+import classRouter, { classifyFailure, clipPrompt, isSlashCommand } from "../src/index.ts";
 import { defaultConfig } from "../src/config.ts";
 import type { Answers } from "../src/types.ts";
 import { createFakePi, type FakeModel, type FakePi, type FakePiOptions } from "./fixtures/fake-pi.ts";
@@ -948,5 +948,75 @@ test("sessions with different breaker settings keep separate circuits", async ()
   } finally {
     await a.cleanup();
     await b.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Prompt handling
+// ---------------------------------------------------------------------------
+
+test("isSlashCommand matches command names, not prompts that start with a path", () => {
+  for (const prompt of ["/status", "/class-router explain", "/review now please", "/plugin:do-thing x"]) {
+    assert.equal(isSlashCommand(prompt), true, prompt);
+  }
+  for (const prompt of [
+    "/home/me/app.ts is failing, fix it",
+    "/tmp/build.log shows a linker error",
+    "/etc/hosts.allow looks wrong",
+    "./scripts/run.sh fails",
+    "please run /status",
+    "/",
+    "/123 is not a command",
+  ]) {
+    assert.equal(isSlashCommand(prompt), false, prompt);
+  }
+});
+
+test("a prompt that starts with a path is classified, a slash command is not", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url));
+  try {
+    await h.fake.emit("before_agent_start", { prompt: "/review the auth module" }, h.ctx);
+    assert.equal(h.stub.requests.length, 0);
+    await h.fake.emit("before_agent_start", { prompt: "/home/me/app/src/auth.ts throws on login, fix it" }, h.ctx);
+    assert.equal(h.stub.requests.length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("clipPrompt keeps short prompts whole and bounds long ones to head and tail", () => {
+  assert.equal(clipPrompt("short", 100), "short");
+  assert.equal(clipPrompt("x".repeat(500), null), "x".repeat(500));
+
+  const long = `REQUEST: fix it${"-".repeat(1000)}END: thanks`;
+  const clipped = clipPrompt(long, 200);
+  assert.ok(clipped.startsWith("REQUEST: fix it"));
+  assert.ok(clipped.endsWith("END: thanks"));
+  assert.match(clipped, /\[\.\.\. 826 characters omitted \.\.\.\]/);
+  // Kept text is exactly the budget; only the marker is extra.
+  assert.equal(clipped.replace(/\n\n\[\.\.\. \d+ characters omitted \.\.\.\]\n\n/, "").length, 200);
+});
+
+test("clipPrompt never splits a surrogate pair", () => {
+  const emoji = "\u{1F600}";
+  for (const max of [200, 201, 202, 203]) {
+    const clipped = clipPrompt(emoji.repeat(300), max);
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(clipped), `max ${max}`);
+  }
+});
+
+test("the classifier receives the clipped prompt", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, { routing: { maxPromptChars: 300 } }),
+  );
+  try {
+    const prompt = `Refactor auth.${"x".repeat(5000)}Keep the API stable.`;
+    await h.fake.emit("before_agent_start", { prompt }, h.ctx);
+    const body = h.stub.requests[0]!.body as { state: string };
+    assert.ok(body.state.length < 400, `sent ${body.state.length} characters`);
+    assert.ok(body.state.startsWith("Refactor auth."));
+    assert.ok(body.state.endsWith("Keep the API stable."));
+  } finally {
+    await h.cleanup();
   }
 });

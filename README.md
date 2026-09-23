@@ -178,6 +178,12 @@ The token is read from the named environment variable, sent as
 `Authorization: Bearer <token>`, and never logged or embedded in errors. A
 missing token makes Jev `unavailable` and the session keeps its model.
 
+**Privacy:** with Jev, the text of every prompt the router classifies is sent to
+the TypeSafe API (or whatever `endpoint` names). Slash commands and empty prompts
+are never sent, and `routing.maxPromptChars` limits how much of a long prompt is
+sent. If prompts must not leave the machine, use `backend: "laya"` with the local
+sidecar, or turn routing off with `enabled: false` for projects that need it.
+
 ### Laya (System One, local sidecar or remote HTTP)
 
 | key | default | meaning |
@@ -377,6 +383,7 @@ working directory changes.
 | `routing.fallbackChains` | each spec falls back to itself then its neighbour (`@smol` -> `@default`, `@default` -> `@slow`, `@slow` -> `@default`) |
 | `routing.confidenceThreshold` | `0.5` |
 | `routing.defaultCategory` | `"standard"` |
+| `routing.maxPromptChars` | `8000` |
 | `circuitBreaker.failureThreshold` | `3` |
 | `circuitBreaker.cooldownMs` | `120000` |
 | `circuitBreaker.halfOpenMaxTrials` | `1` |
@@ -384,6 +391,17 @@ working directory changes.
 `routing.primaryQuestion` must name a `choice` question: score and noul answers
 cannot name a model category. Other questions are answered, reported by
 `/class-router explain`, and stored on the decision, but do not affect routing.
+
+`maxPromptChars` limits how much of each prompt the classifier receives (at
+least `200`, or `null` for no limit). A longer prompt keeps its first and last
+halves with a `[... N characters omitted ...]` marker between them, because the
+actual request is usually at the start or end of a large paste. This limits
+token cost and latency without changing what is sent to the model itself.
+
+Prompts that are slash commands (the first word is a command name such as
+`/review` or `/class-router`) are not classified. A prompt that starts with a
+path, such as `/home/me/app.ts is failing`, is a normal request and is
+classified.
 
 `fallbackChains` maps a **spec** (not a category) to the ordered candidates tried
 when its circuit is open; a spec with no entry falls back to itself. If every

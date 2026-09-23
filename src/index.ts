@@ -62,6 +62,40 @@ export function classifyFailure(errorMessage: string): FailureReason {
 }
 
 // ---------------------------------------------------------------------------
+// Prompt handling
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a prompt is a slash command rather than work to classify. Only the
+ * first word counts, and it must look like a command name: `/review now` is a
+ * command, but `/home/me/app.ts is failing` and `/tmp/x.log shows...` start
+ * with a path and are real requests.
+ */
+export function isSlashCommand(trimmed: string): boolean {
+  const first = trimmed.split(/\s/, 1)[0] ?? "";
+  return /^\/[A-Za-z][\w:-]*$/.test(first);
+}
+
+/**
+ * Bound a prompt to `max` characters, keeping its start and end around an
+ * omission marker; `null` or a short prompt is returned unchanged. Boundaries
+ * never split a surrogate pair.
+ */
+export function clipPrompt(prompt: string, max: number | null): string {
+  if (max === null || prompt.length <= max) return prompt;
+  let head = Math.ceil(max / 2);
+  let tailStart = prompt.length - (max - head);
+  if (isLowSurrogate(prompt.charCodeAt(head))) head -= 1;
+  if (isLowSurrogate(prompt.charCodeAt(tailStart))) tailStart += 1;
+  const omitted = tailStart - head;
+  return `${prompt.slice(0, head)}\n\n[... ${omitted} characters omitted ...]\n\n${prompt.slice(tailStart)}`;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+// ---------------------------------------------------------------------------
 // Per-session state
 // ---------------------------------------------------------------------------
 
@@ -509,7 +543,7 @@ async function onBeforeAgentStart(pi: ExtensionAPI, event: { prompt: string }, c
     }
 
     // Empty prompts and slash commands are not work to classify.
-    if (trimmed === "" || trimmed.startsWith("/")) {
+    if (trimmed === "" || isSlashCommand(trimmed)) {
       state.skipped += 1;
       return;
     }
@@ -525,7 +559,12 @@ async function onBeforeAgentStart(pi: ExtensionAPI, event: { prompt: string }, c
 
     let answers: Record<string, Answer>;
     try {
-      const result = await classifyGuarded(classifier, prompt, state.config, ctx);
+      const result = await classifyGuarded(
+        classifier,
+        clipPrompt(prompt, state.config.routing.maxPromptChars),
+        state.config,
+        ctx,
+      );
       answers = result.answers;
     } catch (error) {
       state.failed += 1;

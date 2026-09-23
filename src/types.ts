@@ -223,6 +223,13 @@ export interface RoutingConfig {
   confidenceThreshold: number;
   /** Category used when the primary answer is missing/unknown. `null` = no override. */
   defaultCategory: string | null;
+  /**
+   * Longest prompt sent to the classifier, in characters; `null` sends it
+   * whole. A longer prompt keeps its start and end (where the request usually
+   * is) around an omission marker, which bounds token cost and latency on a
+   * large paste.
+   */
+  maxPromptChars: number | null;
 }
 
 /** Which sessions this router governs. */
