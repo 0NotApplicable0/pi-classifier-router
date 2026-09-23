@@ -141,6 +141,26 @@ runtime dependency; neither host resolves it at runtime for this extension,
 because the type imports are erased at load. Verifying omp support means running
 the omp binary against the entrypoint, not importing omp's types.
 
+### After installing: restart the session
+
+Extension **modules** load at session start, so a session that was already
+running when you installed this one will not have it. `/reload-plugins` refreshes
+skills, slash commands and MCP servers, but not extension modules. Restart the
+session (or start a new one) before expecting routing to happen; otherwise
+prompts run with no router and leave no trace, which reads as a broken
+extension.
+
+### Upgrading
+
+```bash
+pi update --extensions                                  # pi
+omp plugin install @ejstembler/pi-classifier-router --force   # omp
+```
+
+`omp plugin upgrade <name>` is for marketplace plugins only (`name@marketplace`);
+for an npm-installed plugin it refuses and names the `plugin install --force`
+form instead.
+
 ## Backends
 
 `backend` selects one classifier for the process.
@@ -501,6 +521,69 @@ apply, reason, backend, and latency.
 With `dryRun: true` the prompt is still classified and the decision is still
 notified and recorded, but `setModel` is never called. It is the way to measure
 what the router would choose against a fixed model before letting it route.
+
+## Troubleshooting
+
+### "It doesn't seem to do anything"
+
+Most often nothing changed because the router chose the model you were already
+on, which is a deliberate no-op: `setModel` is not called when the resolved model
+is the current one. The default mapping makes this common, because `standard`
+maps to `@default` and `hard` to `@slow`:
+
+```
+trivial  -> @smol     often deliberately cheaper than your default
+standard -> @default  the model you are already using
+hard     -> @slow     your stronger model, if `modelRoles.slow` differs
+```
+
+If `modelRoles.default` and `modelRoles.slow` name the same model, two of the
+three categories route to where you already are and only `trivial` visibly moves.
+Give `slow` a genuinely different model to see routing for hard prompts.
+
+The record distinguishes the two cases for you: `changed: false` with a
+non-null `resolved` means the router worked and the model was already right.
+
+### Where to look
+
+Every attempt is recorded on the session, and failures are recorded too; a
+notification is ephemeral, so the transcript is the only durable audit trail:
+
+```
+~/.omp/agent/sessions/<project>/<timestamp>_<id>.jsonl    omp
+~/.pi/agent/sessions/<project>/<timestamp>_<id>.jsonl     pi
+```
+
+```bash
+# every routing attempt in a session, with outcome
+grep -o '"customType":"class-router.decision".\{0,200\}' ~/.omp/agent/sessions/<project>/<session>.jsonl
+```
+
+Each entry records:
+
+| field | meaning |
+| --- | --- |
+| `category`, `confidence` | what the classifier answered |
+| `spec` | the spec the mapping chose |
+| `resolved` | the model id that spec resolved to, or `null` if it did not resolve |
+| `changed` | `true` only when the session model actually moved |
+| `reason` | `routed`, or a decline such as `low-confidence` / `all-circuits-open` |
+| `backend`, `latencyMs` | which classifier ran and how long it took |
+| `error` | failure code, present when `reason` is `classification-failed` |
+
+`reason: "classification-failed"` or `"backend-unavailable"` means the router ran
+and could not classify. **No entry at all** means it never ran for that prompt,
+which is what a session started before the extension was installed looks like.
+
+The host's runtime log carries the diagnostic lines:
+
+```bash
+grep -i "class-router" ~/.omp/logs/omp.*.log | tail
+```
+
+Both hosts also expose this live: `/class-router status` shows the config source
+it loaded, the breaker state, and the last decision, and `/class-router explain`
+prints every answer behind it.
 
 ## Limits
 

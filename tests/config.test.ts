@@ -374,3 +374,51 @@ test(
     assert.equal(result.source?.format, "yaml");
   },
 );
+
+// ---------------------------------------------------------------------------
+// Mapping keys must name categories the primary question can actually emit. A
+// typo is otherwise dead config that looks identical to the router not running.
+// ---------------------------------------------------------------------------
+
+test("a declared mapping key the primary question cannot emit is rejected", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({ routing: { modelMapping: { trivail: "@smol" } } }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.equal(result.config, null);
+  assert.ok(
+    result.errors.some((message) => /trivail/.test(message) && /not a category/.test(message)),
+    `expected a not-a-category error, got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test("inherited mapping keys are not held against a custom question set", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({
+      routing: {
+        questions: {
+          effort: { type: "choice", instructions: "How much effort?", criteria: { small: "quick", big: "slow" } },
+        },
+        primaryQuestion: "effort",
+        modelMapping: { small: "@smol", big: "@slow" },
+      },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config, `expected acceptance, got errors ${JSON.stringify(result.errors)}`);
+  assert.equal(result.config.routing.modelMapping["small"], "@smol");
+  // The defaults' own keys survive the merge and are simply not re-validated.
+  assert.equal(result.config.routing.modelMapping["trivial"], "@smol");
+});
+
+test("a defaultCategory that is not mapped is rejected", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({ routing: { defaultCategory: "nonexistent" } }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.equal(result.config, null);
+  assert.ok(
+    result.errors.some((message) => /defaultCategory/.test(message) && /never be applied/.test(message)),
+    `expected a defaultCategory error, got ${JSON.stringify(result.errors)}`,
+  );
+});

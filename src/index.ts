@@ -72,16 +72,34 @@ export function classifyFailure(errorMessage: string): FailureReason {
 // Per-session state
 // ---------------------------------------------------------------------------
 
+/** Why an attempt produced no decision at all. */
+type NoDecisionReason = "classification-failed" | "backend-unavailable";
+
+/** One routing attempt, whether or not it produced a model. */
 interface RouteRecord {
   category: string | null;
   confidence: number;
   spec: string | null;
   apply: string | null;
-  reason: DecisionReason;
+  /** Model id the chosen spec resolved to, when one resolved. */
+  resolved: string | null;
+  /** True only when the session model actually moved. */
+  changed: boolean;
+  reason: DecisionReason | NoDecisionReason;
   backend: RouterConfig["backend"];
   latencyMs: number;
   at: number;
+  /** Failure code, present only on a `classification-failed` attempt. */
+  error?: string;
 }
+
+/** What applying a decision did to the session model. */
+interface AppliedModel {
+  resolved: string | null;
+  changed: boolean;
+}
+
+const NOT_APPLIED: AppliedModel = { resolved: null, changed: false };
 
 interface PendingFailure {
   reason: FailureReason;
@@ -345,6 +363,53 @@ async function classifyGuarded(
 // Event handlers
 // ---------------------------------------------------------------------------
 
+/**
+ * Record one attempt on the session, successful or not.
+ *
+ * The transcript is the only durable audit trail: notifications are ephemeral,
+ * so an attempt that fails must still leave a line, otherwise "the router
+ * declined" and "the router never ran" are indistinguishable afterwards.
+ */
+function recordAttempt(pi: ExtensionAPI, state: SessionState, record: RouteRecord): void {
+  state.lastRecord = record;
+  state.history.push(record);
+  if (state.history.length > HISTORY_LIMIT) state.history.splice(0, state.history.length - HISTORY_LIMIT);
+  pi.appendEntry("class-router.decision", {
+    category: record.category,
+    confidence: record.confidence,
+    spec: record.spec,
+    apply: record.apply,
+    resolved: record.resolved,
+    changed: record.changed,
+    reason: record.reason,
+    backend: record.backend,
+    latencyMs: record.latencyMs,
+    error: record.error,
+  });
+}
+
+/** An attempt that produced no decision at all. */
+function noDecision(
+  backend: RouterConfig["backend"],
+  reason: NoDecisionReason,
+  latencyMs: number,
+  error?: string,
+): RouteRecord {
+  return {
+    category: null,
+    confidence: 0,
+    spec: null,
+    apply: null,
+    resolved: null,
+    changed: false,
+    reason,
+    backend,
+    latencyMs,
+    at: Date.now(),
+    error,
+  };
+}
+
 async function onBeforeAgentStart(
   pi: ExtensionAPI,
   event: { prompt: string },
@@ -376,14 +441,14 @@ async function onBeforeAgentStart(
       return;
     }
 
+    const started = Date.now();
     const classifier = getClassifier(state.config, state.sessionId, pi);
     if (classifier === null) {
       state.skipped += 1;
       notify(ctx, state, `backend ${state.config.backend} unavailable; using session model`, "warning");
+      recordAttempt(pi, state, noDecision(state.config.backend, "backend-unavailable", Date.now() - started));
       return;
     }
-
-    const started = Date.now();
 
     let answers: Record<string, Answer>;
     try {
@@ -402,6 +467,7 @@ async function onBeforeAgentStart(
       } else {
         notify(ctx, state, `classification failed (unexpected); using session model`, "error");
       }
+      recordAttempt(pi, state, noDecision(state.config.backend, "classification-failed", Date.now() - started, code));
       return;
     }
 
@@ -411,30 +477,20 @@ async function onBeforeAgentStart(
     });
     state.lastDecision = decision;
 
-    await applyDecision(pi, ctx, state, decision);
+    const applied = await applyDecision(pi, ctx, state, decision);
 
     const latencyMs = Date.now() - started;
-    const record: RouteRecord = {
+    recordAttempt(pi, state, {
       category: decision.category,
       confidence: decision.confidence,
       spec: decision.spec,
       apply: decision.apply,
+      resolved: applied.resolved,
+      changed: applied.changed,
       reason: decision.reason,
       backend: state.config.backend,
       latencyMs,
       at: Date.now(),
-    };
-    state.lastRecord = record;
-    state.history.push(record);
-    if (state.history.length > HISTORY_LIMIT) state.history.splice(0, state.history.length - HISTORY_LIMIT);
-    pi.appendEntry("class-router.decision", {
-      category: record.category,
-      confidence: record.confidence,
-      spec: record.spec,
-      apply: record.apply,
-      reason: record.reason,
-      backend: record.backend,
-      latencyMs: record.latencyMs,
     });
 
     // Counted only once a decision actually exists: a failed classification is a
@@ -459,8 +515,8 @@ async function applyDecision(
   ctx: ExtensionContext,
   state: SessionState,
   decision: Decision,
-): Promise<void> {
-  if (state.config.dryRun || decision.apply === null) return;
+): Promise<AppliedModel> {
+  if (state.config.dryRun || decision.apply === null) return NOT_APPLIED;
 
   const capabilities = detectHost(ctx);
 
@@ -473,21 +529,25 @@ async function applyDecision(
       spec: decision.apply,
       error: error instanceof Error ? error.message : String(error),
     });
-    return;
+    return NOT_APPLIED;
   }
 
   if (model === undefined) {
     log(pi, "warn", "class-router: model spec did not resolve", { spec: decision.apply });
     notify(ctx, state, `spec ${decision.apply} did not resolve; keeping session model`, "warning");
-    return;
+    return NOT_APPLIED;
   }
+
+  const resolved = model.id;
 
   const currentId = currentModel(capabilities, ctx)?.id;
   if (currentId === model.id) {
-    // Already the routed model: treat the decision as applied, but do not re-set it.
+    // Already the routed model: record the decision as applied, but do not
+    // re-set it. Reporting `changed: false` is what makes a no-op legible in the
+    // session log: without it, "routed" and "did nothing" look identical.
     state.appliedSpec = decision.apply;
     state.appliedModelId = model.id;
-    return;
+    return { resolved, changed: false };
   }
 
   // Prefer the host's own auth verdict when it has one (upstream pi exposes
@@ -497,7 +557,7 @@ async function applyDecision(
       state.authNotified = true;
       notify(ctx, state, `no auth for ${decision.apply}; keeping session model`, "warning");
     }
-    return;
+    return { resolved, changed: false };
   }
 
   let changed: boolean;
@@ -508,7 +568,7 @@ async function applyDecision(
       spec: decision.apply,
       error: error instanceof Error ? error.message : String(error),
     });
-    return;
+    return { resolved, changed: false };
   }
 
   if (!changed) {
@@ -517,11 +577,12 @@ async function applyDecision(
       state.authNotified = true;
       notify(ctx, state, `no auth for ${decision.apply}; keeping session model`, "warning");
     }
-    return;
+    return { resolved, changed: false };
   }
 
   state.appliedSpec = decision.apply;
   state.appliedModelId = model.id;
+  return { resolved, changed: true };
 }
 
 /** A run that ended in an error or abort, read off the trailing assistant message. */
@@ -655,7 +716,9 @@ function commandStatus(ctx: ExtensionContext, state: SessionState): void {
     ctx.ui.notify(`${NOTIFY_PREFIX} last decision: none`);
   } else {
     ctx.ui.notify(
-      `${NOTIFY_PREFIX} last decision: ${last.category ?? "none"} -> ${last.apply ?? "unchanged"} (${last.reason}, ${last.confidence.toFixed(2)}, ${last.latencyMs}ms)`,
+      `${NOTIFY_PREFIX} last decision: ${last.category ?? "none"} -> ${last.apply ?? "unchanged"} ` +
+        `(${last.reason}, ${last.confidence.toFixed(2)}, ${last.latencyMs}ms, ` +
+        `${last.changed ? "model changed" : `model unchanged${last.resolved ? ` (already ${last.resolved})` : ""}`})`,
     );
   }
   ctx.ui.notify(
@@ -675,6 +738,8 @@ function commandExplain(ctx: ExtensionContext, state: SessionState): void {
     `spec: ${decision.spec ?? "none"}`,
     `chain: ${decision.chain.length === 0 ? "none" : decision.chain.join(" -> ")}`,
     `apply: ${decision.apply ?? "unchanged"}`,
+    `resolved: ${state.lastRecord?.resolved ?? "none"}`,
+    `changed: ${state.lastRecord?.changed === true ? "yes" : "no"}`,
     `reason: ${decision.reason}`,
     `detail: ${decision.detail}`,
     `backend: ${state.lastRecord?.backend ?? state.config.backend}`,

@@ -174,7 +174,11 @@ function mergeConfig(base: RouterConfig, input: RouterConfigInput): RouterConfig
   };
 }
 
-function validateConfig(config: RouterConfig): string[] {
+/**
+ * Validate a merged config. `input` is the caller's own file contents, when
+ * available, so defaults the file never mentioned are not held against it.
+ */
+function validateConfig(config: RouterConfig, input?: RouterConfigInput): string[] {
   const errors: string[] = [];
 
   if (config.backend !== "jev" && config.backend !== "laya") {
@@ -183,6 +187,8 @@ function validateConfig(config: RouterConfig): string[] {
 
   const routing = config.routing;
   const questions = routing.questions;
+  /** Criteria of the primary question, once it is known to be a usable choice. */
+  let criteria: Record<string, unknown> | null = null;
   if (!isPlainObject(questions) || Object.keys(questions).length === 0) {
     errors.push("routing.questions must be a non-empty object of questions");
   } else if (!(routing.primaryQuestion in questions)) {
@@ -197,6 +203,8 @@ function validateConfig(config: RouterConfig): string[] {
         `routing.questions[${JSON.stringify(routing.primaryQuestion)}].type must be "choice"; ` +
           "score and noul answers cannot name a model category",
       );
+    } else {
+      criteria = isPlainObject(primary.criteria) ? primary.criteria : {};
     }
   }
 
@@ -208,6 +216,30 @@ function validateConfig(config: RouterConfig): string[] {
       if (typeof spec !== "string") {
         errors.push(`routing.modelMapping[${JSON.stringify(category)}] must be a string, got ${typeof spec}`);
       }
+    }
+
+    // Only keys the file itself declared are checked against the question's
+    // criteria. The mapping merges per key over the defaults, so testing the
+    // merged map would reject a custom question set for inheriting `trivial`
+    // and friends from the defaults it never asked for.
+    const declared = input?.routing?.modelMapping;
+    const declaredKeys = isPlainObject(declared) ? Object.keys(declared) : [];
+    for (const category of declaredKeys) {
+      if (criteria === null || category in criteria) continue;
+      const expected = Object.keys(criteria).map((name) => JSON.stringify(name)).join(", ") || "(none)";
+      errors.push(
+        `routing.modelMapping[${JSON.stringify(category)}] is not a category of ` +
+          `routing.questions[${JSON.stringify(routing.primaryQuestion)}]; expected one of ${expected}`,
+      );
+    }
+
+    // A fallback category that is not itself mapped cannot do anything.
+    const fallback = routing.defaultCategory;
+    if (fallback !== null && isNonEmptyString(fallback) && !(fallback in mapping)) {
+      errors.push(
+        `routing.defaultCategory ${JSON.stringify(fallback)} is not a key of routing.modelMapping, ` +
+          "so the fallback can never be applied",
+      );
     }
   }
 
@@ -328,7 +360,7 @@ export function loadConfig(
     }
 
     const config = mergeConfig(defaultConfig(), parsed as RouterConfigInput);
-    const validationErrors = validateConfig(config);
+    const validationErrors = validateConfig(config, parsed as RouterConfigInput);
     if (validationErrors.length > 0) {
       for (const message of validationErrors) {
         errors.push(`${source.scope} config ${source.path}: ${message}`);

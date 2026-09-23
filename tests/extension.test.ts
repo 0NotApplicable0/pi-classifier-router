@@ -337,18 +337,26 @@ test("enabled false never issues an HTTP request", async () => {
   }
 });
 
-test("a failing classifier never throws out of the handler and leaves the model alone", async () => {
+test("a failing classifier records the failure and leaves the model alone", async () => {
   const h = await harness({ status: 500, answers: {} }, (url) => baseConfig(url));
   try {
     await h.fake.emit("before_agent_start", { prompt: "Refactor the entire auth subsystem" }, h.ctx);
 
     assert.equal(h.stub.requests.length, 1);
     assert.equal(h.fake.state.setModelCalls.length, 0);
-    assert.equal(h.decisions().length, 0);
     assert.ok(
       h.notifications().some((message) => message.includes("classification failed (unavailable)")),
       `expected an unavailable notification, got ${JSON.stringify(h.notifications())}`,
     );
+
+    // Notifications are ephemeral, so a failure must also leave a durable line:
+    // otherwise "declined to route" and "never ran" are indistinguishable later.
+    const first = h.decisions();
+    assert.equal(first.length, 1);
+    assert.equal(first[0]!["reason"], "classification-failed");
+    assert.equal(first[0]!["error"], "unavailable");
+    assert.equal(first[0]!["changed"], false);
+    assert.equal(first[0]!["apply"], null);
 
     // A malformed body must degrade the same way, with a protocol code.
     h.stub.respond({ malformed: true });
@@ -356,6 +364,10 @@ test("a failing classifier never throws out of the handler and leaves the model 
     assert.equal(h.stub.requests.length, 2);
     assert.equal(h.fake.state.setModelCalls.length, 0);
     assert.ok(h.notifications().some((message) => message.includes("classification failed (protocol)")));
+    const second = h.decisions();
+    assert.equal(second.length, 2);
+    assert.equal(second[1]!["reason"], "classification-failed");
+    assert.equal(second[1]!["error"], "protocol");
   } finally {
     await h.cleanup();
   }
@@ -597,4 +609,62 @@ test("classifyFailure sorts provider errors into the five buckets", () => {
   assert.equal(classifyFailure("request aborted by the user"), "transport");
   assert.equal(classifyFailure("the model produced an empty response"), "other");
   assert.equal(classifyFailure(""), "other");
+});
+
+// ---------------------------------------------------------------------------
+// Attempt records: the session transcript is the only durable audit trail, so a
+// record must distinguish "routed and changed the model" from "routed and the
+// model was already right" from "could not classify at all".
+// ---------------------------------------------------------------------------
+
+test("an applied route records the resolved model and that it changed", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url));
+  try {
+    await h.fake.emit("before_agent_start", { prompt: "Refactor the entire auth subsystem" }, h.ctx);
+
+    assert.equal(h.fake.state.setModelCalls.length, 1);
+    const decisions = h.decisions();
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]!["reason"], "routed");
+    assert.equal(decisions[0]!["spec"], "@slow");
+    assert.equal(decisions[0]!["resolved"], "slow-model");
+    assert.equal(decisions[0]!["changed"], true);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("routing to the model already in use is recorded as unchanged", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url));
+  try {
+    // The session already sits on the model this decision would choose.
+    h.fake.setCurrentModel({ id: "slow-model", provider: "test" });
+    await h.fake.emit("before_agent_start", { prompt: "Refactor the entire auth subsystem" }, h.ctx);
+
+    assert.equal(h.fake.state.setModelCalls.length, 0, "the current model must not be re-set");
+    const decisions = h.decisions();
+    assert.equal(decisions.length, 1, "a no-op route is still an attempt worth recording");
+    assert.equal(decisions[0]!["reason"], "routed");
+    assert.equal(decisions[0]!["resolved"], "slow-model");
+    assert.equal(decisions[0]!["changed"], false, "nothing moved, so the record must say so");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a model spec that does not resolve is recorded as unchanged", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url), {
+    resolve: { "@slow": undefined },
+  });
+  try {
+    await h.fake.emit("before_agent_start", { prompt: "Refactor the entire auth subsystem" }, h.ctx);
+
+    assert.equal(h.fake.state.setModelCalls.length, 0);
+    const decisions = h.decisions();
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]!["resolved"], null);
+    assert.equal(decisions[0]!["changed"], false);
+  } finally {
+    await h.cleanup();
+  }
 });
