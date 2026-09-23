@@ -36,6 +36,8 @@ test("stays open before cooldown and permits a probe after it", () => {
 
   now = 1000;
   assert.equal(breaker.allow("@a"), true);
+  assert.equal(snapshotFor(breaker, "@a")?.state, "open");
+  assert.equal(breaker.acquire("@a"), true);
   assert.equal(snapshotFor(breaker, "@a")?.state, "half_open");
 });
 
@@ -44,7 +46,7 @@ test("a half-open success closes the circuit", () => {
   const breaker = new CircuitBreaker(CONFIG, () => now);
   for (let i = 0; i < 3; i += 1) breaker.recordFailure("@a");
   now = 1000;
-  assert.equal(breaker.allow("@a"), true);
+  assert.equal(breaker.acquire("@a"), true);
 
   breaker.recordSuccess("@a");
   const snapshot = snapshotFor(breaker, "@a");
@@ -60,7 +62,7 @@ test("a half-open failure re-opens the circuit and resets the probe budget", () 
   const breaker = new CircuitBreaker(CONFIG, () => now);
   for (let i = 0; i < 3; i += 1) breaker.recordFailure("@a");
   now = 1000;
-  assert.equal(breaker.allow("@a"), true);
+  assert.equal(breaker.acquire("@a"), true);
 
   breaker.recordFailure("@a");
   const snapshot = snapshotFor(breaker, "@a");
@@ -71,7 +73,7 @@ test("a half-open failure re-opens the circuit and resets the probe budget", () 
   now = 1500;
   assert.equal(breaker.allow("@a"), false);
   now = 2000;
-  assert.equal(breaker.allow("@a"), true);
+  assert.equal(breaker.acquire("@a"), true);
   assert.equal(snapshotFor(breaker, "@a")?.state, "half_open");
   assert.equal(snapshotFor(breaker, "@a")?.halfOpenTrials, 1);
 });
@@ -82,9 +84,11 @@ test("half-open admits at most halfOpenMaxTrials concurrent probes", () => {
   const breaker = new CircuitBreaker(config, () => now);
   breaker.recordFailure("@a");
   now = 100;
+  assert.equal(breaker.acquire("@a"), true);
   assert.equal(breaker.allow("@a"), true);
-  assert.equal(breaker.allow("@a"), true);
+  assert.equal(breaker.acquire("@a"), true);
   assert.equal(breaker.allow("@a"), false);
+  assert.equal(breaker.acquire("@a"), false);
 });
 
 test("unknown specs are created closed and record calls do not throw", () => {
@@ -128,4 +132,43 @@ test("reset clears one spec, or everything", () => {
   breaker.reset();
   assert.deepEqual(breaker.snapshot(), []);
   assert.equal(breaker.allow("@a"), true);
+});
+
+test("allow never claims a probe, however often it is asked", () => {
+  let now = 0;
+  const breaker = new CircuitBreaker(CONFIG, () => now);
+  for (let i = 0; i < 3; i += 1) breaker.recordFailure("@a");
+  now = 1000;
+  for (let i = 0; i < 5; i += 1) assert.equal(breaker.allow("@a"), true);
+  const snapshot = snapshotFor(breaker, "@a");
+  assert.equal(snapshot?.state, "open");
+  assert.equal(snapshot?.halfOpenTrials, 0);
+  assert.equal(breaker.acquire("@a"), true);
+});
+
+test("release returns an unresolved probe so the circuit can be probed again", () => {
+  let now = 0;
+  const breaker = new CircuitBreaker(CONFIG, () => now);
+  for (let i = 0; i < 3; i += 1) breaker.recordFailure("@a");
+  now = 1000;
+  assert.equal(breaker.acquire("@a"), true);
+  assert.equal(breaker.allow("@a"), false);
+
+  breaker.release("@a");
+  assert.equal(snapshotFor(breaker, "@a")?.halfOpenTrials, 0);
+  assert.equal(breaker.allow("@a"), true);
+  assert.equal(breaker.acquire("@a"), true);
+});
+
+test("release is a no-op on closed, open, and unknown circuits", () => {
+  const breaker = new CircuitBreaker(CONFIG, () => 0);
+  breaker.acquire("@closed");
+  breaker.release("@closed");
+  for (let i = 0; i < 3; i += 1) breaker.recordFailure("@open");
+  breaker.release("@open");
+  breaker.release("@unknown");
+  assert.deepEqual(breaker.snapshot(), [
+    { spec: "@closed", state: "closed", failures: 0, openedAt: null, halfOpenTrials: 0 },
+    { spec: "@open", state: "open", failures: 3, openedAt: 0, halfOpenTrials: 0 },
+  ]);
 });

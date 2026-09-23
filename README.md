@@ -290,6 +290,13 @@ YAML:
 5. `~/.omp/class-router.yml`
 6. `~/.omp/class-router.yaml`
 
+Project files (1-3) are read only when the host trusts the project
+(`ctx.isProjectTrusted()`). A config can choose the executable the Laya sidecar
+runs and the endpoint that receives your prompts and a bearer token, so a cloned
+repository must not be able to supply one. In an untrusted project a project
+file is reported and skipped, and the global files are used. Trusting the
+project later reloads the config on the next prompt or `/class-router` command.
+
 Both formats describe exactly the same configuration, so use whichever you
 prefer:
 
@@ -462,6 +469,11 @@ One breaker is kept per process, with one circuit per spec:
   `half_open` and admits at most `halfOpenMaxTrials` probes.
 - `half_open` - a probe success closes the circuit and clears the failure count; a
   probe failure re-opens it with a fresh cooldown.
+
+Checking a fallback chain never uses up a probe. A probe is claimed only for
+the spec that actually runs the turn. If that run ends without an outcome being
+attributed (a dry run, a spec that does not resolve, missing auth, or a manual
+`/model` switch), the probe is handed back so the circuit can still recover.
 
 The breaker is fed by observed outcomes, never by classification errors:
 

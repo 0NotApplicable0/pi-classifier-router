@@ -6,9 +6,12 @@
  * `halfOpenMaxTrials` concurrent probes. A probe success closes the circuit; a
  * probe failure re-opens it with a fresh cooldown.
  *
- * The clock is injectable so tests need no timers. `allow` is a query: it must
- * stay safe to call repeatedly (the extension arbitrates availability per
- * prompt), so it never accumulates failures or successes.
+ * The clock is injectable so tests need no timers. `allow` is a pure query: it
+ * must stay safe to call repeatedly (the router filters a whole fallback chain
+ * per prompt), so it never changes a circuit. A half-open probe is claimed
+ * separately with `acquire`, and only for the spec that actually runs; a claim
+ * that ends without a recorded outcome is handed back with `release`, otherwise
+ * the probe budget leaks and the circuit stays half-open forever.
  */
 
 import type { CircuitBreakerConfig } from "./types.ts";
@@ -49,23 +52,44 @@ export class CircuitBreaker {
     return created;
   }
 
-  /** Whether a request to `spec` may proceed right now. */
+  /** Whether a request to `spec` may proceed right now. Never changes state. */
   allow(spec: string): boolean {
     const circuit = this.#circuit(spec);
+    if (circuit.state === "closed") return true;
+    if (circuit.state === "open") return this.#cooledDown(circuit);
+    return circuit.halfOpenTrials < this.#config.halfOpenMaxTrials;
+  }
 
+  /**
+   * Claim the right to send a request to `spec`. On a closed circuit this is
+   * free; on a cooled-down open or half-open circuit it takes one probe slot,
+   * which `recordSuccess`/`recordFailure` resolve and `release` returns.
+   */
+  acquire(spec: string): boolean {
+    const circuit = this.#circuit(spec);
     if (circuit.state === "closed") return true;
 
     if (circuit.state === "open") {
-      if (circuit.openedAt === null || this.#now() - circuit.openedAt < this.#config.cooldownMs) return false;
+      if (!this.#cooledDown(circuit)) return false;
       circuit.state = "half_open";
-      circuit.halfOpenTrials = 0;
-      circuit.halfOpenTrials += 1;
+      circuit.halfOpenTrials = 1;
       return true;
     }
 
     if (circuit.halfOpenTrials >= this.#config.halfOpenMaxTrials) return false;
     circuit.halfOpenTrials += 1;
     return true;
+  }
+
+  /** Return a probe slot claimed by `acquire` that will never see an outcome. */
+  release(spec: string): void {
+    const circuit = this.#circuits.get(spec);
+    if (circuit === undefined || circuit.state !== "half_open" || circuit.halfOpenTrials === 0) return;
+    circuit.halfOpenTrials -= 1;
+  }
+
+  #cooledDown(circuit: Circuit): boolean {
+    return circuit.openedAt !== null && this.#now() - circuit.openedAt >= this.#config.cooldownMs;
   }
 
   recordSuccess(spec: string): void {

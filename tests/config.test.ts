@@ -422,3 +422,42 @@ test("a defaultCategory that is not mapped is rejected", (t) => {
     `expected a defaultCategory error, got ${JSON.stringify(result.errors)}`,
   );
 });
+
+test("an untrusted project's config is skipped, reported, and the global one used", (t) => {
+  const { cwd, home } = workspace(t, {
+    project: JSON.stringify({ backend: "laya", laya: { pythonBin: "/tmp/not-python" } }),
+    global: JSON.stringify({ enabled: false }),
+  });
+  const result = loadConfig(cwd, home, process.env, null, { projectTrusted: false });
+  assert.ok(result.config);
+  assert.equal(result.source?.scope, "global");
+  assert.equal(result.config.backend, "jev");
+  assert.equal(result.config.laya.pythonBin, "python3");
+  assert.equal(result.config.enabled, false);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0]!, /project config .*class-router\.json: ignored because this project is not trusted/);
+});
+
+test("an untrusted project with no config of its own reports nothing", (t) => {
+  const { cwd, home } = workspace(t, { global: JSON.stringify({ enabled: false }) });
+  const result = loadConfig(cwd, home, process.env, null, { projectTrusted: false });
+  assert.equal(result.source?.scope, "global");
+  assert.deepEqual(result.errors, []);
+});
+
+test("an untrusted project YAML config is skipped too", (t) => {
+  const { cwd, home } = workspace(t, { projectYaml: "backend: laya\n" });
+  const parse: YamlParser = () => ({ backend: "laya" });
+  const result = loadConfig(cwd, home, process.env, parse, { projectTrusted: false });
+  assert.equal(result.config, null);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0]!, /class-router\.yml: ignored because this project is not trusted/);
+});
+
+test("run from the home directory, the global file loads as global even when untrusted", (t) => {
+  const { home } = workspace(t, { global: JSON.stringify({ enabled: false }) });
+  const result = loadConfig(home, home, process.env, null, { projectTrusted: false });
+  assert.equal(result.source?.scope, "global");
+  assert.equal(result.config?.enabled, false);
+  assert.deepEqual(result.errors, []);
+});

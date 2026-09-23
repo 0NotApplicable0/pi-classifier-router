@@ -2,6 +2,9 @@
  * Config discovery, defaults, merge, and validation.
  *
  * Precedence is project over global; within a scope JSON is preferred over YAML.
+ * Project files are read only for a trusted project: a config can name the
+ * executable the Laya sidecar spawns and the endpoint that receives prompts and
+ * a bearer token, so a cloned repository must not be able to supply one.
  * The first existing, parseable, valid file wins. A file that fails to read or
  * parse is reported and skipped, but a file that parses yet violates the
  * contract is rejected outright: silently mis-routing is worse than falling back
@@ -20,6 +23,14 @@ export interface ConfigSource {
   path: string;
   scope: "project" | "global";
   format: ConfigFormat;
+}
+
+export interface ConfigLoadOptions {
+  /**
+   * Whether the host trusts the project at `cwd`. When false, project-scope
+   * files are skipped (and reported) and only the global scope is searched.
+   */
+  projectTrusted?: boolean;
 }
 
 export interface ConfigLoadResult {
@@ -312,11 +323,25 @@ export function loadConfig(
   home: string = os.homedir(),
   env: Record<string, string | undefined> = process.env,
   yaml: YamlParser | null = defaultYamlParser(),
+  options: ConfigLoadOptions = {},
 ): ConfigLoadResult {
   void env;
   const errors: string[] = [];
+  const projectTrusted = options.projectTrusted ?? true;
+  // Run from the home directory, the project scope IS the global scope.
+  const projectIsHome = path.resolve(cwd) === path.resolve(home);
 
   for (const source of configPaths(cwd, home)) {
+    if (source.scope === "project" && (projectIsHome || !projectTrusted)) {
+      if (!projectIsHome && fs.existsSync(source.path)) {
+        errors.push(
+          `project config ${source.path}: ignored because this project is not trusted; ` +
+            "trust the project in the host to use it",
+        );
+      }
+      continue;
+    }
+
     let raw: string;
     try {
       raw = fs.readFileSync(source.path, "utf8");

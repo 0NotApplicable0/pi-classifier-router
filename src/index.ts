@@ -97,9 +97,11 @@ interface RouteRecord {
 interface AppliedModel {
   resolved: string | null;
   changed: boolean;
+  /** True when the decided spec is the one this turn runs on (changed or already current). */
+  active: boolean;
 }
 
-const NOT_APPLIED: AppliedModel = { resolved: null, changed: false };
+const NOT_APPLIED: AppliedModel = { resolved: null, changed: false, active: false };
 
 interface PendingFailure {
   reason: FailureReason;
@@ -109,6 +111,8 @@ interface PendingFailure {
 interface SessionState {
   sessionId: string;
   cwd: string;
+  /** Project trust the config was loaded under; a change forces a reload. */
+  projectTrusted: boolean;
   config: RouterConfig;
   source: ConfigSource | null;
   errors: string[];
@@ -123,6 +127,12 @@ interface SessionState {
   pendingFailure: PendingFailure | null;
   /** One breaker failure per run, so a retry storm is not counted repeatedly. */
   failureRecorded: boolean;
+  /**
+   * Spec whose breaker probe slot this session holds, or null. A half-open
+   * circuit admits a bounded number of probes, so a slot claimed for a run that
+   * never settles an outcome must be released or the circuit never recovers.
+   */
+  probeSpec: string | null;
   history: RouteRecord[];
   routed: number;
   skipped: number;
@@ -182,6 +192,19 @@ function isSubagentSession(ctx: ExtensionContext): boolean {
   return path.basename(path.dirname(file)).endsWith(".jsonl");
 }
 
+/**
+ * Whether the host trusts the session's project. Anything but an explicit
+ * `true` (a missing method, a throw) is untrusted: project config can pick the
+ * executable the Laya sidecar runs and where prompts and tokens are sent.
+ */
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+  try {
+    return typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted() === true;
+  } catch {
+    return false;
+  }
+}
+
 function getBreaker(config: RouterConfig, pi: ExtensionAPI): CircuitBreaker {
   const key = JSON.stringify(config.circuitBreaker);
   if (runtime.breaker !== null && runtime.breakerKey === key) return runtime.breaker;
@@ -189,6 +212,14 @@ function getBreaker(config: RouterConfig, pi: ExtensionAPI): CircuitBreaker {
   runtime.breakerKey = key;
   log(pi, "debug", "class-router: circuit breaker configured", { config: config.circuitBreaker });
   return runtime.breaker;
+}
+
+/** Hand back a probe slot this session claimed but will not settle. */
+function releaseProbe(state: SessionState): void {
+  const spec = state.probeSpec;
+  if (spec === null) return;
+  state.probeSpec = null;
+  runtime.breaker?.release(spec);
 }
 
 /** Rebuild the classifier only when the resolved backend configuration changes. */
@@ -228,15 +259,18 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
   const sessionId = sessionKey(ctx);
   let state = sessions.get(sessionId);
 
-  if (state !== undefined && state.cwd === ctx.cwd) return state;
+  const projectTrusted = isProjectTrusted(ctx);
+  if (state !== undefined && state.cwd === ctx.cwd && state.projectTrusted === projectTrusted) return state;
 
-  const result = loadConfig(ctx.cwd);
+  const result = loadConfig(ctx.cwd, undefined, undefined, undefined, { projectTrusted });
   const cwdChanged = state !== undefined && state.cwd !== ctx.cwd;
+  const trustChanged = state !== undefined && state.projectTrusted !== projectTrusted;
 
   if (state === undefined) {
     state = {
       sessionId,
       cwd: ctx.cwd,
+      projectTrusted,
       config: result.config ?? defaultConfig(),
       source: result.source,
       errors: result.errors,
@@ -248,6 +282,7 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
       appliedModelId: null,
       pendingFailure: null,
       failureRecorded: false,
+      probeSpec: null,
       history: [],
       routed: 0,
       skipped: 0,
@@ -256,6 +291,7 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
     sessions.set(sessionId, state);
   } else {
     state.cwd = ctx.cwd;
+    state.projectTrusted = projectTrusted;
     state.config = result.config ?? defaultConfig();
     state.source = result.source;
     state.errors = result.errors;
@@ -265,7 +301,7 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
     ctx.ui.notify(`${NOTIFY_PREFIX} config error: ${oneLine(error)}`, "error");
   }
 
-  if (cwdChanged) {
+  if (cwdChanged || trustChanged) {
     // A reload resets runtime toggles, so say so instead of silently reverting.
     ctx.ui.notify(`${NOTIFY_PREFIX} config reloaded for ${ctx.cwd}`);
   }
@@ -417,6 +453,8 @@ async function onBeforeAgentStart(
 ): Promise<void> {
   try {
     const state = ensureSession(ctx, pi);
+    // A new run means any earlier run has ended; a probe it never settled is stale.
+    releaseProbe(state);
     const prompt = typeof event.prompt === "string" ? event.prompt : "";
     const trimmed = prompt.trim();
 
@@ -477,7 +515,16 @@ async function onBeforeAgentStart(
     });
     state.lastDecision = decision;
 
+    // `decide` only asked; claim the probe for the one spec that may now run.
+    // Nothing awaits between the two, so the claim cannot lose a race.
+    if (breaker !== null && decision.apply !== null && !state.config.dryRun && breaker.acquire(decision.apply)) {
+      state.probeSpec = decision.apply;
+    }
+
     const applied = await applyDecision(pi, ctx, state, decision);
+    // The spec is not running this turn (dry run, unresolved, no auth), so no
+    // outcome will ever be recorded against the claim.
+    if (!applied.active) releaseProbe(state);
 
     const latencyMs = Date.now() - started;
     recordAttempt(pi, state, {
@@ -547,7 +594,7 @@ async function applyDecision(
     // session log: without it, "routed" and "did nothing" look identical.
     state.appliedSpec = decision.apply;
     state.appliedModelId = model.id;
-    return { resolved, changed: false };
+    return { resolved, changed: false, active: true };
   }
 
   // Prefer the host's own auth verdict when it has one (upstream pi exposes
@@ -557,7 +604,7 @@ async function applyDecision(
       state.authNotified = true;
       notify(ctx, state, `no auth for ${decision.apply}; keeping session model`, "warning");
     }
-    return { resolved, changed: false };
+    return { resolved, changed: false, active: false };
   }
 
   let changed: boolean;
@@ -568,7 +615,7 @@ async function applyDecision(
       spec: decision.apply,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { resolved, changed: false };
+    return { resolved, changed: false, active: false };
   }
 
   if (!changed) {
@@ -577,12 +624,12 @@ async function applyDecision(
       state.authNotified = true;
       notify(ctx, state, `no auth for ${decision.apply}; keeping session model`, "warning");
     }
-    return { resolved, changed: false };
+    return { resolved, changed: false, active: false };
   }
 
   state.appliedSpec = decision.apply;
   state.appliedModelId = model.id;
-  return { resolved, changed: true };
+  return { resolved, changed: true, active: true };
 }
 
 /** A run that ended in an error or abort, read off the trailing assistant message. */
@@ -606,13 +653,18 @@ function onAgentEnd(
     if (event.willContinue === true) return;
 
     const state = sessions.get(sessionKey(ctx));
-    if (state === undefined || state.appliedSpec === null) return;
+    if (state === undefined) return;
+    if (state.appliedSpec === null) {
+      releaseProbe(state);
+      return;
+    }
 
     // Only attribute an outcome while our model is still the session model; a
     // manual `/model` switch must never be blamed on the router. The applied
     // spec itself survives a model change, so a later turn can still use it.
     const current = currentModel(detectHost(ctx), ctx);
     if (current === undefined || current.id !== state.appliedModelId) {
+      releaseProbe(state);
       state.pendingFailure = null;
       state.failureRecorded = false;
       return;
@@ -627,6 +679,10 @@ function onAgentEnd(
       breaker.recordSuccess(state.appliedSpec);
     }
 
+    // A recorded outcome resolves the probe; release covers a claim on a spec
+    // other than the one just attributed.
+    if (state.probeSpec === state.appliedSpec) state.probeSpec = null;
+    releaseProbe(state);
     state.pendingFailure = null;
     state.failureRecorded = false;
   } catch {
@@ -658,6 +714,7 @@ function onAutoRetryStart(
     if (!state.failureRecorded && runtime.breaker !== null) {
       runtime.breaker.recordFailure(state.appliedSpec);
       state.failureRecorded = true;
+      if (state.probeSpec === state.appliedSpec) state.probeSpec = null;
     }
   } catch {
     // Never break a turn from breaker bookkeeping.
@@ -678,6 +735,7 @@ function onAutoRetryEnd(
     if (current === undefined || current.id !== state.appliedModelId) return;
 
     if (runtime.breaker !== null) runtime.breaker.recordSuccess(state.appliedSpec);
+    if (state.probeSpec === state.appliedSpec) state.probeSpec = null;
     state.pendingFailure = null;
     state.failureRecorded = false;
   } catch {
@@ -687,6 +745,8 @@ function onAutoRetryEnd(
 
 function onSessionShutdown(pi: ExtensionAPI, ctx: ExtensionContext): void {
   const sessionId = sessionKey(ctx);
+  const state = sessions.get(sessionId);
+  if (state !== undefined) releaseProbe(state);
   sessions.delete(sessionId);
 
   if (runtime.classifierOwner === sessionId && runtime.classifier !== null) {

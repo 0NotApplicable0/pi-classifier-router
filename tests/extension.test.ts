@@ -92,6 +92,7 @@ async function harness(
     setModelResult: options.setModelResult ?? true,
     host: options.host,
     list: options.list,
+    projectTrusted: options.projectTrusted,
   });
 
   classRouter(fake.pi as unknown as ExtensionAPI);
@@ -664,6 +665,124 @@ test("a model spec that does not resolve is recorded as unchanged", async () => 
     assert.equal(decisions.length, 1);
     assert.equal(decisions[0]!["resolved"], null);
     assert.equal(decisions[0]!["changed"], false);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Half-open probes
+//
+// Routing asks the breaker about every spec in a chain, so asking must never
+// consume the single half-open probe: only the spec that actually runs claims
+// it, and a claim that ends without an outcome is handed back.
+// ---------------------------------------------------------------------------
+
+/** A short cooldown that is still unique per test, so each gets its own breaker. */
+function probeBreaker(): Record<string, number> {
+  seq += 1;
+  return nextBreaker({ failureThreshold: 1, cooldownMs: 20 + (seq % 20) });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Route once to @slow, fail the run, and wait out the cooldown. */
+async function openThenCoolSlow(h: Harness, breaker: Record<string, number>): Promise<void> {
+  await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+  assert.equal(h.fake.state.setModelCalls.at(-1)?.id, "slow-model");
+  await h.fake.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error" }] }, h.ctx);
+  // Leave @slow's model so the next route is a real switch.
+  h.fake.setCurrentModel({ id: "session-default-model", provider: "test" });
+  await sleep(breaker["cooldownMs"]! + 10);
+}
+
+test("a low-confidence turn does not use up a half-open circuit's probe", async () => {
+  const breaker = probeBreaker();
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url, { circuitBreaker: breaker }));
+  try {
+    await openThenCoolSlow(h, breaker);
+
+    h.stub.respond({ answers: choice("hard", 0.1) });
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+    assert.equal(h.decisions().at(-1)!["reason"], "low-confidence");
+
+    h.stub.respond({ answers: choice("hard", 0.92) });
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+    assert.equal(h.decisions().at(-1)!["apply"], "@slow");
+    assert.equal(h.fake.state.setModelCalls.at(-1)?.id, "slow-model");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a probe claimed for a spec that never runs is released", async () => {
+  const breaker = probeBreaker();
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url, { circuitBreaker: breaker }));
+  try {
+    await openThenCoolSlow(h, breaker);
+
+    // @slow is chosen but cannot be applied, so its claim must be returned.
+    h.fake.setResolve("@slow", undefined);
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+    assert.equal(h.decisions().at(-1)!["apply"], "@slow");
+    assert.equal(h.decisions().at(-1)!["changed"], false);
+
+    h.fake.setResolve("@slow", MODELS["@slow"]);
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+    assert.equal(h.decisions().at(-1)!["apply"], "@slow");
+    assert.equal(h.fake.state.setModelCalls.at(-1)?.id, "slow-model");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a successful probe run closes the circuit", async () => {
+  const breaker = probeBreaker();
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url, { circuitBreaker: breaker }));
+  try {
+    await openThenCoolSlow(h, breaker);
+
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+    assert.equal(h.fake.state.setModelCalls.at(-1)?.id, "slow-model");
+    await h.fake.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] }, h.ctx);
+
+    const command = h.fake.commands.get("class-router");
+    assert.ok(command);
+    await command.handler("status", h.ctx);
+    assert.ok(h.notifications().some((line) => /breaker: .*@slow=closed\/0/.test(line)));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Project trust
+// ---------------------------------------------------------------------------
+
+test("an untrusted project's config is never loaded, and trusting it reloads", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url), { projectTrusted: false });
+  const projectFile = path.join(h.cwd, ".omp", "class-router.json");
+  try {
+    await h.fake.emit("session_start", {}, h.ctx);
+    assert.ok(
+      h.notifications().some((line) => line.includes(projectFile) && /not trusted/.test(line)),
+      "the skipped project file is reported",
+    );
+
+    const command = h.fake.commands.get("class-router");
+    assert.ok(command);
+    await command.handler("status", h.ctx);
+    const source = h.notifications().find((line) => line.includes("config source:"));
+    assert.ok(source);
+    assert.ok(!source.includes(projectFile), "the project file is not the config source");
+    assert.equal(h.stub.requests.length, 0);
+
+    h.fake.state.projectTrusted = true;
+    await command.handler("status", h.ctx);
+    assert.ok(h.notifications().some((line) => /config reloaded/.test(line)));
+    assert.ok(h.notifications().some((line) => line.includes("config source:") && line.includes(projectFile)));
   } finally {
     await h.cleanup();
   }

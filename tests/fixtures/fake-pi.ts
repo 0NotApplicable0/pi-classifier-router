@@ -57,6 +57,7 @@ export interface FakeContextState {
   aborts: number;
   shutdowns: number;
   timers: Set<NodeJS.Timeout>;
+  projectTrusted: boolean;
 }
 
 export interface FakePiOptions {
@@ -71,6 +72,8 @@ export interface FakePiOptions {
   setModelResult?: boolean;
   flags?: Record<string, unknown>;
   sessionName?: string | null;
+  /** What `ctx.isProjectTrusted()` reports; defaults to true. */
+  projectTrusted?: boolean;
   /**
    * Host flavour. `"omp"` (default) exposes the omp-only surface: the
    * `ctx.models` facade, managed timers, and `pi.logger`. `"pi"` omits all
@@ -186,7 +189,7 @@ export function createFakeContext(state: FakeContextState, options: FakeContextO
     },
     isIdle: () => true,
     getSystemPrompt: () => [],
-    isProjectTrusted: () => true,
+    isProjectTrusted: () => state.projectTrusted,
     hasPendingMessages: () => false,
     abort: () => {
       state.aborts += 1;
@@ -251,6 +254,7 @@ export function createFakePi(options: FakePiOptions = {}): FakePi {
     aborts: 0,
     shutdowns: 0,
     timers: new Set<NodeJS.Timeout>(),
+    projectTrusted: options.projectTrusted ?? true,
   };
   for (const [spec, model] of Object.entries(options.resolve ?? {})) {
     if (model !== undefined) state.resolveTable.set(spec, model);
