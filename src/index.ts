@@ -353,6 +353,12 @@ function formatBreaker(snapshot: BreakerSnapshot[]): string {
 /**
  * Classify with the backend's own timeout plus an independent outer guard, so a
  * backend that ignores its abort signal still cannot hang the turn.
+ *
+ * The backend owns the budget: both clients time out at `timeoutMs` and report
+ * `timeout`. The guard fires only `HARD_GUARD_SLACK_MS` later, so it never
+ * pre-empts the backend's own timer; if it aborted at the same moment, the
+ * backend would see a caller abort and a slow call would be logged as
+ * `aborted` rather than `timeout`.
  */
 async function classifyGuarded(
   classifier: Classifier,
@@ -363,30 +369,26 @@ async function classifyGuarded(
   const budgetMs = config.backend === "laya" ? config.laya.timeoutMs : config.jev.timeoutMs;
   const capabilities = detectHost(ctx);
   const controller = new AbortController();
-  // Timers must be host-managed where possible: omp's `ctx.setTimeout` is
-  // unref'd, contains its callback's throws, and is cleared on session shutdown,
-  // which a raw timer would outlive. `startTimer` uses the managed surface when
-  // the host has one and a raw timer otherwise.
-  const softTimer = startTimer(capabilities, () => controller.abort(), budgetMs);
 
-  let releaseTimers = (): void => {
-    softTimer.cancel();
-  };
+  let cancelGuard = (): void => {};
   const hardGuard = new Promise<never>((_resolve, reject) => {
-    const hardTimer = startTimer(
+    // Timers must be host-managed where possible: omp's `ctx.setTimeout` is
+    // unref'd, contains its callback's throws, and is cleared on session
+    // shutdown, which a raw timer would outlive. `startTimer` uses the managed
+    // surface when the host has one and a raw timer otherwise.
+    const timer = startTimer(
       capabilities,
       () => {
-        controller.abort();
+        // Settle the race as a timeout BEFORE aborting: an abort listener can
+        // reject the backend's promise synchronously, as a caller abort.
         reject(
           new ClassifierError(classifier.name, "timeout", `classification exceeded ${budgetMs}ms hard guard`),
         );
+        controller.abort();
       },
       budgetMs + HARD_GUARD_SLACK_MS,
     );
-    releaseTimers = () => {
-      softTimer.cancel();
-      hardTimer.cancel();
-    };
+    cancelGuard = () => timer.cancel();
   });
   // The guard must never surface as an unhandled rejection once the race settles.
   hardGuard.catch(() => undefined);
@@ -394,7 +396,7 @@ async function classifyGuarded(
   try {
     return await Promise.race([classifier.classify(prompt, config.routing.questions, { signal: controller.signal }), hardGuard]);
   } finally {
-    releaseTimers();
+    cancelGuard();
   }
 }
 

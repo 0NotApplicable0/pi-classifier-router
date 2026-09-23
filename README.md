@@ -265,6 +265,13 @@ Warmup starts at `session_start` and never blocks the session: with
 `timeoutMs`. With `preload: false`, warmup only waits for the worker to report
 ready and the first classification pays the load.
 
+The worker serves one request at a time and cannot stop a prediction once it
+has started. Each request therefore carries a `deadline` (the time the client
+stops waiting, `timeoutMs` after sending). If a request is still queued when its
+deadline passes, the worker answers `timeout` without running it. On a slow CPU,
+one prediction that overran its budget therefore delays only the next request,
+instead of making every request queued behind it time out too.
+
 Latency is dominated by the device: a GPU (`cuda`/`mps`) handles a typed question
 in tens to low hundreds of milliseconds, while CPU-only inference is roughly an
 order of magnitude slower, which is why the default budget is larger than Jev's.

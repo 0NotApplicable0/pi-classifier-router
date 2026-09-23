@@ -800,3 +800,25 @@ test("config warnings for unknown keys are surfaced as warnings", async () => {
     await h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Timeouts are reported as timeouts. The extension's own guard must not abort
+// the backend at the same moment the backend's timer fires, or the slow call is
+// logged as a caller abort instead.
+// ---------------------------------------------------------------------------
+
+test("a classification that exceeds its budget is recorded as a timeout", async () => {
+  const h = await harness({ answers: choice("hard", 0.92), delayMs: 1000 }, (url) =>
+    baseConfig(url, { jev: { endpoint: url, apiKeyEnvVar: TOKEN_VAR, timeoutMs: 100 } }),
+  );
+  try {
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+    const decisions = h.decisions();
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]!["reason"], "classification-failed");
+    assert.equal(decisions[0]!["error"], "timeout");
+    assert.ok(h.notifications().some((message) => message.includes("classification failed (timeout)")));
+  } finally {
+    await h.cleanup();
+  }
+});

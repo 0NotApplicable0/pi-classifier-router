@@ -2,11 +2,18 @@
  * Laya (local System One) classifier: a persistent NDJSON sidecar process.
  *
  * Wire protocol, shared verbatim with `python/laya_worker.py`:
- *   request  {"id":<int>,"op":"predict"|"ping"|"preload"|"shutdown", ...}
+ *   request  {"id":<int>,"op":"predict"|"ping"|"preload"|"shutdown","deadline"?:<epoch ms>, ...}
  *   reply    {"id":<int>,"ok":true,"result":{...}}
  *          | {"id":<int>,"ok":false,"error":<string>,"kind":"unavailable"|"timeout"|"protocol"}
  *   event    {"event":"ready","version":<string>,"loaded":<string[]>}
  *          | {"event":"error","error":<string>,"kind":...}
+ *
+ * The worker serves one request at a time and cannot interrupt a running
+ * prediction, so a request the client has already given up on would otherwise
+ * still run, and every request queued behind it would time out in turn. Each
+ * request therefore carries the wall-clock `deadline` at which the client stops
+ * waiting; the worker answers an expired `predict`/`preload` with a `timeout`
+ * error instead of running it. Client and worker share a host, so one clock.
  *
  * stdout carries one JSON object per line and nothing else; the worker writes
  * diagnostics to stderr. The child is spawned lazily and respawned after a
@@ -260,6 +267,7 @@ export function createLayaClassifier(config: LayaBackendConfig, deps: Classifier
       }
 
       const id = nextId++;
+      const deadline = Date.now() + timeoutMs;
       let timer: NodeJS.Timeout;
       const cleanup = (): void => {
         clearTimeout(timer);
@@ -294,7 +302,7 @@ export function createLayaClassifier(config: LayaBackendConfig, deps: Classifier
       }
 
       try {
-        proc.stdin.write(`${JSON.stringify({ id, op, ...payload })}\n`);
+        proc.stdin.write(`${JSON.stringify({ id, op, deadline, ...payload })}\n`);
       } catch (error) {
         failWith("unavailable", `laya worker stdin closed: ${error instanceof Error ? error.message : String(error)}`);
       }

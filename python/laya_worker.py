@@ -6,8 +6,14 @@ TypeScript client can parse strictly; every diagnostic (including warnings and
 progress) goes to stderr. Module-level state keeps the checkpoints loaded across
 requests.
 
+Requests are served one at a time and a running prediction cannot be
+interrupted, so a request the client already abandoned would still run and push
+every later request past its own timeout. Each request may carry `deadline`
+(epoch milliseconds, same host so same clock); an expired `predict` or
+`preload` is answered with a `timeout` error without being run.
+
 Protocol
-    request  {"id": <int>, "op": "predict"|"ping"|"preload"|"shutdown", ...}
+    request  {"id": <int>, "op": "predict"|"ping"|"preload"|"shutdown", "deadline"?: <epoch ms>, ...}
     reply    {"id": <int>, "ok": true,  "result": {...}}
            | {"id": <int>, "ok": false, "error": "...", "kind": "unavailable"|"timeout"|"protocol"}
     event    {"event": "ready", "version": "...", "loaded": ["english", ...]}
@@ -18,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import traceback
 
 
@@ -38,6 +45,17 @@ except Exception as exc:  # A missing or broken install must not look like a pro
 
 
 STATE = {"agent": None, "loaded": []}
+
+# Ops that do real work and are worth skipping once the client has stopped waiting.
+DEADLINED_OPS = ("predict", "preload")
+
+
+def expired(request: dict) -> bool:
+    """True when the request carries a deadline that has already passed."""
+    deadline = request.get("deadline")
+    if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+        return False
+    return time.time() * 1000.0 > deadline
 
 
 def describe_loaded(agent, fallback: str | None) -> list[str]:
@@ -176,6 +194,17 @@ def main() -> int:
             continue
         if not isinstance(request, dict):
             print("laya_worker: ignoring non-object request", file=sys.stderr)
+            continue
+
+        if request.get("op") in DEADLINED_OPS and expired(request):
+            emit(
+                {
+                    "id": request.get("id"),
+                    "ok": False,
+                    "error": "deadline passed while queued; request skipped",
+                    "kind": "timeout",
+                }
+            )
             continue
 
         try:
