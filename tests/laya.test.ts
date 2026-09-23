@@ -47,6 +47,7 @@ function config(overrides: Partial<LayaBackendConfig> = {}): LayaBackendConfig {
     subfolder: null,
     device: null,
     router: false,
+    maxLoaded: null,
     preload: false,
     timeoutMs: 3000,
     warmupTimeoutMs: 3000,
@@ -132,6 +133,24 @@ if (probe.error || probe.status !== 0) {
     assert.ok(line, `worker never reported its argv: ${logs.join(" | ")}`);
     const argv = JSON.parse(line.slice(line.indexOf("["))) as string[];
     assert.deepEqual(argv, ["--repo", "stub/repo", "--device", "cpu", "--router", "--subfolder", "typed-decisions"]);
+  });
+
+  /** The argv the stub worker was started with, read back from its stderr. */
+  async function argvFor(overrides: Partial<LayaBackendConfig>, t: { after?: (fn: () => unknown) => void }): Promise<string[]> {
+    const logs: string[] = [];
+    const laya = createLayaClassifier(config(overrides), { env: {}, logger: (message) => logs.push(message) });
+    t.after?.(() => laya.dispose());
+    await laya.classify("args", QUESTIONS);
+    const line = logs.find((message) => message.includes("STUB_LAYA_ARGS"));
+    assert.ok(line, `worker never reported its argv: ${logs.join(" | ")}`);
+    return JSON.parse(line.slice(line.indexOf("["))) as string[];
+  }
+
+  test("maxLoaded reaches the worker only in router mode", async (t) => {
+    assert.deepEqual(await argvFor({ router: true, maxLoaded: 3 }, t), ["--repo", "stub/repo", "--router", "--max-loaded", "3"]);
+    // null leaves Laya's own default in charge.
+    assert.deepEqual(await argvFor({ router: true, maxLoaded: null }, t), ["--repo", "stub/repo", "--router"]);
+    assert.deepEqual(await argvFor({ router: false, maxLoaded: 3 }, t), ["--repo", "stub/repo"]);
   });
 
   test("a worker crash rejects the in-flight call as unavailable, and a later call respawns", async (t) => {

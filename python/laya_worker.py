@@ -74,14 +74,21 @@ def ensure_agent(args) -> object:
     if STATE["agent"] is not None:
         return STATE["agent"]
     if args.router:
+        # laya.Router takes no repo or subfolder: it always serves the upstream
+        # convaiinnovations/laya checkpoints, so --repo/--subfolder are unused here.
         kwargs: dict = {"preload": args.preload}
         if args.device:
             kwargs["device"] = args.device
-        try:
-            agent = laya.Router(max_loaded=args.max_loaded, **kwargs)
-        except TypeError:
-            # Older Router builds do not take max_loaded.
+        if args.max_loaded is None:
+            # Laya's own default keeps English + multilingual resident.
             agent = laya.Router(**kwargs)
+        else:
+            try:
+                agent = laya.Router(max_loaded=args.max_loaded, **kwargs)
+            except TypeError:
+                # Older Router builds do not take max_loaded.
+                print("laya_worker: this laya.Router ignores --max-loaded", file=sys.stderr)
+                agent = laya.Router(**kwargs)
     else:
         kwargs = {"subfolder": args.subfolder or None}
         if args.device:
@@ -161,7 +168,12 @@ def main() -> int:
     parser.add_argument("--device", default="", help="torch device; empty means auto-detect")
     parser.add_argument("--router", action="store_true", help="serve through laya.Router")
     parser.add_argument("--preload", action="store_true", help="load checkpoints before serving")
-    parser.add_argument("--max-loaded", type=int, default=1, help="checkpoint budget passed to laya.Router")
+    parser.add_argument(
+        "--max-loaded",
+        type=int,
+        default=None,
+        help="checkpoints laya.Router keeps resident; omitted means Laya's default",
+    )
     args = parser.parse_args()
 
     try:

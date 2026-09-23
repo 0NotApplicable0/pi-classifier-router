@@ -14,6 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -820,5 +821,122 @@ test("a classification that exceeds its budget is recorded as a timeout", async 
     assert.ok(h.notifications().some((message) => message.includes("classification failed (timeout)")));
   } finally {
     await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared classifiers
+//
+// Sessions in one process share a classifier only when their backend config
+// matches. The Laya sidecar is the expensive case (each spawn reloads the
+// checkpoints), so these tests count spawns of the stub worker.
+// ---------------------------------------------------------------------------
+
+const STUB_LAYA = path.resolve(import.meta.dirname, "fixtures", "stub_laya_worker.py");
+
+interface LayaSession {
+  fake: FakePi;
+  ctx: ExtensionContext;
+  cwd: string;
+}
+
+/** A session in its own project dir whose config points Laya at the stub worker. */
+function layaSession(timeoutMs: number): LayaSession {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-classifier-router-laya-"));
+  fs.mkdirSync(path.join(cwd, ".omp"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".omp", "class-router.json"),
+    JSON.stringify({
+      backend: "laya",
+      laya: { pythonBin: "python3", workerScript: STUB_LAYA, repo: "stub/repo", router: false, preload: false, timeoutMs },
+      circuitBreaker: nextBreaker(),
+      notify: false,
+    }),
+  );
+  const fake = createFakePi({ cwd, sessionId: unique("laya-session"), resolve: MODELS });
+  classRouter(fake.pi as unknown as ExtensionAPI);
+  return { fake, ctx: fake.ctx as unknown as ExtensionContext, cwd };
+}
+
+async function prompt(session: LayaSession): Promise<void> {
+  await session.fake.emit("before_agent_start", { prompt: PROMPT }, session.ctx);
+}
+
+function spawnCount(logFile: string): number {
+  if (!fs.existsSync(logFile)) return 0;
+  return fs.readFileSync(logFile, "utf8").split("\n").filter((line) => line !== "").length;
+}
+
+const hasPython = !spawnSync("python3", ["--version"]).error;
+
+test(
+  "sessions with different configs keep their own classifiers instead of evicting each other",
+  hasPython ? {} : { skip: "python3 is unavailable" },
+  async () => {
+    const logFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-log-")), "spawns");
+    process.env["STUB_LAYA_SPAWN_LOG"] = logFile;
+    const base = 3000 + seq;
+    const first = layaSession(base);
+    const second = layaSession(base + 1);
+    const again = layaSession(base);
+    try {
+      for (let round = 0; round < 3; round += 1) {
+        await prompt(first);
+        await prompt(second);
+      }
+      // One sidecar per distinct config, not one per switch.
+      assert.equal(spawnCount(logFile), 2);
+      for (const session of [first, second]) {
+        assert.ok(session.fake.state.entries.every((entry) => (entry.data as { reason: string }).reason !== "classification-failed"));
+      }
+
+      // A third session with the first one's config shares its sidecar.
+      await prompt(again);
+      assert.equal(spawnCount(logFile), 2);
+
+      // The session that created it leaving must not pull it from under the other.
+      await first.fake.emit("session_shutdown", {}, first.ctx);
+      await prompt(again);
+      assert.equal(spawnCount(logFile), 2);
+
+      // Once the last user leaves it is disposed, so the next user spawns afresh.
+      await again.fake.emit("session_shutdown", {}, again.ctx);
+      const fresh = layaSession(base);
+      try {
+        await prompt(fresh);
+        assert.equal(spawnCount(logFile), 3);
+      } finally {
+        await fresh.fake.emit("session_shutdown", {}, fresh.ctx);
+        fs.rmSync(fresh.cwd, { recursive: true, force: true });
+      }
+    } finally {
+      delete process.env["STUB_LAYA_SPAWN_LOG"];
+      for (const session of [first, second, again]) {
+        await session.fake.emit("session_shutdown", {}, session.ctx);
+        fs.rmSync(session.cwd, { recursive: true, force: true });
+      }
+      fs.rmSync(path.dirname(logFile), { recursive: true, force: true });
+    }
+  },
+);
+
+test("sessions with different breaker settings keep separate circuits", async () => {
+  const hardBreaker = nextBreaker({ failureThreshold: 1 });
+  const a = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url, { circuitBreaker: hardBreaker }));
+  const b = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url));
+  try {
+    await a.fake.emit("before_agent_start", { prompt: PROMPT }, a.ctx);
+    await a.fake.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error" }] }, a.ctx);
+
+    // B routing in between must not replace A's breaker (and forget @slow is open).
+    await b.fake.emit("before_agent_start", { prompt: PROMPT }, b.ctx);
+    assert.equal(b.fake.state.setModelCalls.at(-1)?.id, "slow-model");
+
+    a.fake.setCurrentModel({ id: "session-default-model", provider: "test" });
+    await a.fake.emit("before_agent_start", { prompt: PROMPT }, a.ctx);
+    assert.equal(a.decisions().at(-1)!["apply"], "@default");
+  } finally {
+    await a.cleanup();
+    await b.cleanup();
   }
 });

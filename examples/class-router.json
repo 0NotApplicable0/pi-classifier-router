@@ -21,6 +21,7 @@
     "subfolder": null,
     "device": null,
     "router": true,
+    "maxLoaded": null,
     "preload": true,
     "timeoutMs": 4000,
     "warmupTimeoutMs": 600000,

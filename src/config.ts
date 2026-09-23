@@ -104,6 +104,7 @@ export function defaultConfig(): RouterConfig {
       subfolder: null,
       device: null,
       router: true,
+      maxLoaded: null,
       preload: true,
       timeoutMs: 4000,
       warmupTimeoutMs: 600000,
@@ -436,6 +437,26 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
   }
   for (const key of ["router", "preload"] as const) {
     if (typeof laya[key] !== "boolean") errors.push(`laya.${key} must be true or false, got ${describe(laya[key])}`);
+  }
+  const maxLoaded: unknown = laya.maxLoaded;
+  if (maxLoaded !== null && !(Number.isInteger(maxLoaded) && (maxLoaded as number) >= 1)) {
+    errors.push(`laya.maxLoaded must be an integer >= 1 or null, got ${describe(maxLoaded)}`);
+  }
+
+  // Settings the local sidecar would silently ignore. Checked only when they
+  // are live: another backend or the http transport never reads them.
+  if (config.backend === "laya" && laya.transport === "python") {
+    const defaults = defaultConfig().laya;
+    if (laya.router === true) {
+      if (laya.repo !== defaults.repo || laya.subfolder !== null) {
+        errors.push(
+          `laya.repo and laya.subfolder cannot be used with laya.router: true, because laya.Router always serves ` +
+            `the ${defaults.repo} checkpoints; set laya.router to false to load one checkpoint from a repo/subfolder`,
+        );
+      }
+    } else if (maxLoaded !== null) {
+      errors.push("laya.maxLoaded only applies when laya.router is true");
+    }
   }
 
   const transport = config.laya.transport;

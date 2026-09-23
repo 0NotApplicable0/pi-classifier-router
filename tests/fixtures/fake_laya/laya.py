@@ -12,6 +12,8 @@ import time
 __version__ = "fake-0"
 
 CALLS: list = []
+# kwargs of the most recent Router(...) call, so a test can see what the worker passed.
+ROUTER_KWARGS: dict = {}
 
 
 class _Agent:
@@ -21,7 +23,12 @@ class _Agent:
             time.sleep(state["sleep_ms"] / 1000.0)
         return {
             "model": "fake-model",
-            "answers": {"ran": {"type": "noul", "noul": 1.0, "confidence": 1.0}, "calls": len(CALLS), "state": state},
+            "answers": {
+                "ran": {"type": "noul", "noul": 1.0, "confidence": 1.0},
+                "calls": len(CALLS),
+                "state": state,
+                "router_kwargs": ROUTER_KWARGS,
+            },
         }
 
 
@@ -30,4 +37,6 @@ def load(repo, subfolder=None, device=None):
 
 
 def Router(**kwargs):
+    ROUTER_KWARGS.clear()
+    ROUTER_KWARGS.update(kwargs)
     return _Agent()

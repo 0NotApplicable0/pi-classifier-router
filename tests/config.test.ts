@@ -615,3 +615,43 @@ test("the shipped JSON example loads with no errors or warnings", (t) => {
   assert.deepEqual(result.errors, []);
   assert.deepEqual(result.warnings, []);
 });
+
+// ---------------------------------------------------------------------------
+// laya.Router serves only the upstream checkpoints, so settings it cannot honour
+// are rejected where they would be live (local sidecar, laya backend).
+// ---------------------------------------------------------------------------
+
+const LAYA_ROUTER_CASES: Array<[string, Record<string, unknown>, RegExp | null]> = [
+  ["router with a subfolder", { subfolder: "typed-decisions" }, /cannot be used with laya\.router: true/],
+  ["router with another repo", { repo: "someone/else" }, /cannot be used with laya\.router: true/],
+  ["a single checkpoint from a subfolder", { router: false, subfolder: "typed-decisions" }, null],
+  ["maxLoaded with the router", { maxLoaded: 3 }, null],
+  ["maxLoaded without the router", { router: false, maxLoaded: 3 }, /maxLoaded only applies when laya\.router is true/],
+  ["a zero maxLoaded", { maxLoaded: 0 }, /maxLoaded must be an integer >= 1 or null/],
+  ["a fractional maxLoaded", { maxLoaded: 1.5 }, /maxLoaded must be an integer >= 1 or null/],
+];
+
+for (const [label, laya, expected] of LAYA_ROUTER_CASES) {
+  test(`laya config: ${label} is ${expected === null ? "accepted" : "rejected"}`, (t) => {
+    const { cwd, home } = workspace(t, { global: JSON.stringify({ backend: "laya", laya }) });
+    const result = loadConfig(cwd, home);
+    if (expected === null) {
+      assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+    } else {
+      assert.equal(result.config, null);
+      assert.match(result.errors.join("\n"), expected);
+    }
+  });
+}
+
+test("router-only checks do not apply where the settings are not used", (t) => {
+  const idle = { subfolder: "typed-decisions", router: true };
+  for (const input of [
+    { backend: "jev", laya: idle },
+    { backend: "laya", laya: { ...idle, transport: "http", endpoint: "http://127.0.0.1:1/v1" } },
+  ]) {
+    const { cwd, home } = workspace(t, { global: JSON.stringify(input) });
+    const result = loadConfig(cwd, home);
+    assert.ok(result.config, `errors for ${JSON.stringify(input)}: ${JSON.stringify(result.errors)}`);
+  }
+});

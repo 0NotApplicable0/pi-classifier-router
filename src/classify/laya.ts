@@ -95,6 +95,7 @@ export function createLayaClassifier(config: LayaBackendConfig, deps: Classifier
     const args = ["--repo", config.repo];
     if (config.device) args.push("--device", config.device);
     if (config.router) args.push("--router");
+    if (config.router && config.maxLoaded !== null) args.push("--max-loaded", String(config.maxLoaded));
     if (config.preload) args.push("--preload");
     if (config.subfolder) args.push("--subfolder", config.subfolder);
     return args;

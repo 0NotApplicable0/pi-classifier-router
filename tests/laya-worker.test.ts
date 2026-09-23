@@ -29,12 +29,12 @@ interface Reply {
 }
 
 /** Spawn the real worker and collect its stdout as parsed NDJSON lines. */
-function startWorker(): {
+function startWorker(extraArgs: string[] = []): {
   send(request: Record<string, unknown>): void;
   next(): Promise<Record<string, unknown>>;
   stop(): void;
 } {
-  const child = spawn(PYTHON, [WORKER, "--repo", "fake/repo"], {
+  const child = spawn(PYTHON, [WORKER, "--repo", "fake/repo", ...extraArgs], {
     env: { ...process.env, PYTHONPATH: FAKE_LAYA },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -138,6 +138,26 @@ if (probe.error || probe.status !== 0) {
     }
   });
 
+  /** The kwargs the worker handed to laya.Router, observed through the fake. */
+  async function routerKwargs(extraArgs: string[]): Promise<Record<string, unknown>> {
+    const worker = startWorker(extraArgs);
+    try {
+      await worker.next();
+      worker.send({ id: 1, op: "predict", state: "hi", questions: {} });
+      const reply = (await worker.next()) as { result?: { answers?: { router_kwargs?: Record<string, unknown> } } };
+      const kwargs = reply.result?.answers?.router_kwargs;
+      assert.ok(kwargs, `no router kwargs in ${JSON.stringify(reply)}`);
+      return kwargs;
+    } finally {
+      worker.stop();
+    }
+  }
+
+  test("router mode leaves max_loaded to Laya unless --max-loaded is given", async () => {
+    assert.deepEqual(await routerKwargs(["--router"]), { preload: false });
+    assert.deepEqual(await routerKwargs(["--router", "--max-loaded", "3"]), { preload: false, max_loaded: 3 });
+  });
+
   test("the client stamps each request with a deadline of now + its timeout", async () => {
     const config: LayaBackendConfig = {
       transport: "python",
@@ -149,6 +169,7 @@ if (probe.error || probe.status !== 0) {
       subfolder: null,
       device: null,
       router: false,
+      maxLoaded: null,
       preload: false,
       timeoutMs: 3000,
       warmupTimeoutMs: 3000,

@@ -15,6 +15,8 @@ Environment:
     STUB_LAYA_NOISE             "1" writes non-JSON noise lines on stdout
     STUB_LAYA_CRASH_ONCE        path to a marker file: the first `predict` removes
                                 it and exits(7); later spawns behave normally
+    STUB_LAYA_SPAWN_LOG         path to a file: each start appends one line, so a
+                                test can count how often the sidecar was spawned
 """
 
 from __future__ import annotations
@@ -46,6 +48,11 @@ def main() -> int:
     parser.add_argument("--preload", action="store_true")
     parser.add_argument("--max-loaded", type=int, default=1)
     args = parser.parse_args()
+
+    spawn_log = os.environ.get("STUB_LAYA_SPAWN_LOG")
+    if spawn_log:
+        with open(spawn_log, "a", encoding="utf8") as handle:
+            handle.write(f"{os.getpid()}\n")
 
     mode = os.environ.get("STUB_LAYA_MODE", "normal")
     crash_once = os.environ.get("STUB_LAYA_CRASH_ONCE")

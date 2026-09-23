@@ -114,6 +114,10 @@ interface SessionState {
   /** Project trust the config was loaded under; a change forces a reload. */
   projectTrusted: boolean;
   config: RouterConfig;
+  /** Breaker for this session's `circuitBreaker` settings, shared with matching sessions. */
+  breaker: CircuitBreaker;
+  /** Key of the shared classifier this session holds, or null when it holds none. */
+  classifierKey: string | null;
   source: ConfigSource | null;
   errors: string[];
   sourceNotified: boolean;
@@ -141,24 +145,28 @@ interface SessionState {
 
 const sessions = new Map<string, SessionState>();
 
+/** A classifier shared by every session whose backend configuration matches. */
+interface ClassifierEntry {
+  classifier: Classifier;
+  /** Sessions using it; the classifier is disposed when the last one leaves. */
+  sessions: Set<string>;
+}
+
 /**
- * One classifier/breaker pair for the process. The classifier is rebuilt only
- * when the backend configuration changes, and is disposed by the session that
- * created it.
+ * Classifiers and breakers are cached per configuration, not per process.
+ * Sessions in one process (a parent and its subagents, or several projects)
+ * may load different configs; a single slot made them evict each other's
+ * classifier on every prompt, and for Laya each eviction killed the sidecar and
+ * reloaded its checkpoints.
  */
-const runtime: {
-  classifier: Classifier | null;
-  classifierKey: string | null;
-  classifierOwner: string | null;
-  breaker: CircuitBreaker | null;
-  breakerKey: string | null;
-} = {
-  classifier: null,
-  classifierKey: null,
-  classifierOwner: null,
-  breaker: null,
-  breakerKey: null,
-};
+const classifiers = new Map<string, ClassifierEntry>();
+
+/**
+ * Breakers are tiny and hold per-spec health worth keeping across sessions, so
+ * they are never evicted: a session that reopens with the same thresholds sees
+ * the circuits it left.
+ */
+const breakers = new Map<string, CircuitBreaker>();
 
 function sessionKey(ctx: ExtensionContext): string {
   try {
@@ -205,13 +213,14 @@ function isProjectTrusted(ctx: ExtensionContext): boolean {
   }
 }
 
-function getBreaker(config: RouterConfig, pi: ExtensionAPI): CircuitBreaker {
+function breakerFor(config: RouterConfig, pi: ExtensionAPI): CircuitBreaker {
   const key = JSON.stringify(config.circuitBreaker);
-  if (runtime.breaker !== null && runtime.breakerKey === key) return runtime.breaker;
-  runtime.breaker = new CircuitBreaker(config.circuitBreaker);
-  runtime.breakerKey = key;
+  const existing = breakers.get(key);
+  if (existing !== undefined) return existing;
+  const created = new CircuitBreaker(config.circuitBreaker);
+  breakers.set(key, created);
   log(pi, "debug", "class-router: circuit breaker configured", { config: config.circuitBreaker });
-  return runtime.breaker;
+  return created;
 }
 
 /** Hand back a probe slot this session claimed but will not settle. */
@@ -219,32 +228,50 @@ function releaseProbe(state: SessionState): void {
   const spec = state.probeSpec;
   if (spec === null) return;
   state.probeSpec = null;
-  runtime.breaker?.release(spec);
+  state.breaker.release(spec);
 }
 
-/** Rebuild the classifier only when the resolved backend configuration changes. */
-function getClassifier(config: RouterConfig, sessionId: string, pi: ExtensionAPI): Classifier | null {
-  const key = JSON.stringify({ backend: config.backend, jev: config.jev, laya: config.laya });
-  if (runtime.classifier !== null && runtime.classifierKey === key) return runtime.classifier;
+function classifierKeyOf(config: RouterConfig): string {
+  return JSON.stringify({ backend: config.backend, jev: config.jev, laya: config.laya });
+}
 
-  if (runtime.classifier !== null) {
-    void runtime.classifier.dispose().catch(() => undefined);
-    runtime.classifier = null;
-  }
+/** Drop this session's hold on its classifier, disposing it if no one else uses it. */
+function detachClassifier(state: SessionState, pi: ExtensionAPI): void {
+  const key = state.classifierKey;
+  if (key === null) return;
+  state.classifierKey = null;
+  const entry = classifiers.get(key);
+  if (entry === undefined) return;
+  entry.sessions.delete(state.sessionId);
+  if (entry.sessions.size > 0) return;
+  classifiers.delete(key);
+  void entry.classifier.dispose().catch(() => undefined);
+  log(pi, "debug", "class-router: classifier disposed");
+}
 
-  try {
-    runtime.classifier = createClassifier(config);
-    runtime.classifierKey = key;
-    runtime.classifierOwner = sessionId;
-  } catch (error) {
-    // A backend that cannot even be constructed must not take the extension down.
-    runtime.classifierKey = null;
-    runtime.classifierOwner = null;
-    const message = error instanceof Error ? error.message : String(error);
-    log(pi, "warn", "class-router: classifier construction failed", { backend: config.backend, error: message });
-    return null;
+/**
+ * The classifier for this session's backend configuration, shared with every
+ * session whose configuration matches, and built on first use.
+ */
+function getClassifier(state: SessionState, pi: ExtensionAPI): Classifier | null {
+  const key = classifierKeyOf(state.config);
+  if (state.classifierKey !== key) detachClassifier(state, pi);
+
+  let entry = classifiers.get(key);
+  if (entry === undefined) {
+    try {
+      entry = { classifier: createClassifier(state.config), sessions: new Set() };
+    } catch (error) {
+      // A backend that cannot even be constructed must not take the extension down.
+      const message = error instanceof Error ? error.message : String(error);
+      log(pi, "warn", "class-router: classifier construction failed", { backend: state.config.backend, error: message });
+      return null;
+    }
+    classifiers.set(key, entry);
   }
-  return runtime.classifier;
+  entry.sessions.add(state.sessionId);
+  state.classifierKey = key;
+  return entry.classifier;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,11 +294,14 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
   const trustChanged = state !== undefined && state.projectTrusted !== projectTrusted;
 
   if (state === undefined) {
+    const config = result.config ?? defaultConfig();
     state = {
       sessionId,
       cwd: ctx.cwd,
       projectTrusted,
-      config: result.config ?? defaultConfig(),
+      config,
+      breaker: breakerFor(config, pi),
+      classifierKey: null,
       source: result.source,
       errors: result.errors,
       sourceNotified: false,
@@ -293,6 +323,9 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
     state.cwd = ctx.cwd;
     state.projectTrusted = projectTrusted;
     state.config = result.config ?? defaultConfig();
+    // A held probe belongs to the old breaker; hand it back before switching.
+    releaseProbe(state);
+    state.breaker = breakerFor(state.config, pi);
     state.source = result.source;
     state.errors = result.errors;
   }
@@ -310,7 +343,6 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
   }
 
   reportSource(ctx, state);
-  getBreaker(state.config, pi);
   return state;
 }
 
@@ -485,7 +517,7 @@ async function onBeforeAgentStart(
     }
 
     const started = Date.now();
-    const classifier = getClassifier(state.config, state.sessionId, pi);
+    const classifier = getClassifier(state, pi);
     if (classifier === null) {
       state.skipped += 1;
       notify(ctx, state, `backend ${state.config.backend} unavailable; using session model`, "warning");
@@ -514,15 +546,15 @@ async function onBeforeAgentStart(
       return;
     }
 
-    const breaker = runtime.breaker;
+    const breaker = state.breaker;
     const decision = decide(state.config, answers, {
-      isAvailable: breaker === null ? () => true : (spec) => breaker.allow(spec),
+      isAvailable: (spec) => breaker.allow(spec),
     });
     state.lastDecision = decision;
 
     // `decide` only asked; claim the probe for the one spec that may now run.
     // Nothing awaits between the two, so the claim cannot lose a race.
-    if (breaker !== null && decision.apply !== null && !state.config.dryRun && breaker.acquire(decision.apply)) {
+    if (decision.apply !== null && !state.config.dryRun && breaker.acquire(decision.apply)) {
       state.probeSpec = decision.apply;
     }
 
@@ -675,13 +707,12 @@ function onAgentEnd(
       return;
     }
 
-    const breaker = runtime.breaker;
     const failed = state.pendingFailure !== null || runFailed(event.messages);
 
     if (failed) {
-      if (!state.failureRecorded && breaker !== null) breaker.recordFailure(state.appliedSpec);
-    } else if (breaker !== null) {
-      breaker.recordSuccess(state.appliedSpec);
+      if (!state.failureRecorded) state.breaker.recordFailure(state.appliedSpec);
+    } else {
+      state.breaker.recordSuccess(state.appliedSpec);
     }
 
     // A recorded outcome resolves the probe; release covers a claim on a spec
@@ -716,8 +747,8 @@ function onAutoRetryStart(
       reason: state.pendingFailure.reason,
     });
 
-    if (!state.failureRecorded && runtime.breaker !== null) {
-      runtime.breaker.recordFailure(state.appliedSpec);
+    if (!state.failureRecorded) {
+      state.breaker.recordFailure(state.appliedSpec);
       state.failureRecorded = true;
       if (state.probeSpec === state.appliedSpec) state.probeSpec = null;
     }
@@ -739,7 +770,7 @@ function onAutoRetryEnd(
     const current = currentModel(detectHost(ctx), ctx);
     if (current === undefined || current.id !== state.appliedModelId) return;
 
-    if (runtime.breaker !== null) runtime.breaker.recordSuccess(state.appliedSpec);
+    state.breaker.recordSuccess(state.appliedSpec);
     if (state.probeSpec === state.appliedSpec) state.probeSpec = null;
     state.pendingFailure = null;
     state.failureRecorded = false;
@@ -751,16 +782,10 @@ function onAutoRetryEnd(
 function onSessionShutdown(pi: ExtensionAPI, ctx: ExtensionContext): void {
   const sessionId = sessionKey(ctx);
   const state = sessions.get(sessionId);
-  if (state !== undefined) releaseProbe(state);
+  if (state === undefined) return;
+  releaseProbe(state);
+  detachClassifier(state, pi);
   sessions.delete(sessionId);
-
-  if (runtime.classifierOwner === sessionId && runtime.classifier !== null) {
-    void runtime.classifier.dispose().catch(() => undefined);
-    runtime.classifier = null;
-    runtime.classifierKey = null;
-    runtime.classifierOwner = null;
-    log(pi, "debug", "class-router: classifier disposed");
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -774,8 +799,7 @@ function commandStatus(ctx: ExtensionContext, state: SessionState): void {
   );
   const source = state.source === null ? "none (built-in defaults)" : `${state.source.path} (${state.source.scope})`;
   ctx.ui.notify(`${NOTIFY_PREFIX} config source: ${oneLine(source)}`);
-  const breaker = runtime.breaker;
-  ctx.ui.notify(`${NOTIFY_PREFIX} breaker: ${breaker === null ? "unconfigured" : formatBreaker(breaker.snapshot())}`);
+  ctx.ui.notify(`${NOTIFY_PREFIX} breaker: ${formatBreaker(state.breaker.snapshot())}`);
   const last = state.lastRecord;
   if (last === null) {
     ctx.ui.notify(`${NOTIFY_PREFIX} last decision: none`);
@@ -846,7 +870,7 @@ function registerCommand(pi: ExtensionAPI): void {
             ctx.ui.notify(`${NOTIFY_PREFIX} routing disabled; the session model is left alone`);
             return;
           case "reset": {
-            getBreaker(state.config, pi).reset();
+            state.breaker.reset();
             ctx.ui.notify(`${NOTIFY_PREFIX} circuit breaker reset`);
             return;
           }
@@ -879,7 +903,7 @@ export default function classRouter(pi: ExtensionAPI): void {
       const state = ensureSession(ctx, pi);
       // Loading Laya's checkpoints takes far longer than a turn's budget, so it
       // starts here and never blocks the session. Jev's warmup is a no-op.
-      const classifier = getClassifier(state.config, state.sessionId, pi);
+      const classifier = getClassifier(state, pi);
       if (classifier?.warmup !== undefined) {
         void classifier.warmup().catch((error: unknown) => {
           log(pi, "warn", "class-router: classifier warmup failed", {

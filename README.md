@@ -187,17 +187,27 @@ missing token makes Jev `unavailable` and the session keeps its model.
 | `apiKeyEnvVar` | `""` | environment variable holding an optional bearer token for `endpoint`; blank means no `Authorization` header |
 | `pythonBin` | `python3` | interpreter used to run the sidecar |
 | `workerScript` | `python/laya_worker.py` | worker path (absolute, or relative to the extension root) |
-| `repo` | `convaiinnovations/laya` | Hugging Face repo bundling the checkpoints |
-| `subfolder` | `null` | `null` = English root, `"multilingual"`, `"typed-decisions"` |
+| `repo` | `convaiinnovations/laya` | Hugging Face repo bundling the checkpoints; `router: false` only |
+| `subfolder` | `null` | `null` = English root, `"multilingual"`, `"typed-decisions"`; `router: false` only |
 | `device` | `null` | torch device (`cpu`, `cuda`, `mps`), or `null` for auto-detect |
 | `router` | `true` | serve checkpoints through `laya.Router` (adds multilingual routing) |
+| `maxLoaded` | `null` | checkpoints `laya.Router` keeps loaded; `null` keeps Laya's default (English + multilingual); `router: true` only |
 | `preload` | `true` | load weights during warmup instead of on the first classification |
 | `timeoutMs` | `4000` | per-classification budget |
 | `warmupTimeoutMs` | `600000` | budget for loading weights |
 | `hfTokenEnvVar` | `HF_TOKEN` | environment variable holding the Hugging Face token |
 
+`router` decides how checkpoints are chosen. `laya.Router` takes no repo or
+subfolder: it always serves the `convaiinnovations/laya` checkpoints and picks
+one per prompt by language. So with the local sidecar and `backend: "laya"`, a
+config that sets `repo` or `subfolder` together with `router: true` is rejected
+rather than silently ignored. To load one specific checkpoint (for example,
+`"typed-decisions"` or a fine-tune in your own repo), set `router: false`.
+`maxLoaded` is the reverse: it applies only to the Router, so setting it with
+`router: false` is rejected.
+
 `transport` gates which fields matter: the python-only keys (`pythonBin`,
-`workerScript`, `repo`, `subfolder`, `device`, `router`, `preload`,
+`workerScript`, `repo`, `subfolder`, `device`, `router`, `maxLoaded`, `preload`,
 `warmupTimeoutMs`, `hfTokenEnvVar`) are ignored when `transport` is `"http"`,
 and `endpoint`/`apiKeyEnvVar` are ignored when `transport` is `"python"`. Both
 transports share `timeoutMs`, and both speak the same wire format, so switching

@@ -121,6 +121,7 @@ function layaConfig(path: string, apiKeyEnvVar = "", timeoutMs = 2000): LayaBack
     subfolder: null,
     device: null,
     router: true,
+    maxLoaded: null,
     preload: true,
     timeoutMs,
     warmupTimeoutMs: 3000,

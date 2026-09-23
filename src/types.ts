@@ -188,8 +188,17 @@ export interface LayaBackendConfig {
   subfolder: string | null;
   /** Torch device (`cpu`, `cuda`, `mps`), or `null` for auto-detect. */
   device: string | null;
-  /** Serve every checkpoint through `laya.Router` (adds multilingual routing). */
+  /**
+   * Serve every checkpoint through `laya.Router` (adds multilingual routing).
+   * The Router always serves the upstream `convaiinnovations/laya` checkpoints,
+   * so `repo` and `subfolder` cannot be combined with it.
+   */
   router: boolean;
+  /**
+   * Checkpoints `laya.Router` keeps resident; `null` keeps Laya's own default
+   * (English + multilingual). Only meaningful with `router: true`.
+   */
+  maxLoaded: number | null;
   /** Load weights during `warmup` instead of on the first classification. */
   preload: boolean;
   /** Per-classification budget; exceeding it fails the call. */
