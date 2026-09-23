@@ -1,6 +1,6 @@
 {
   "name": "@ejstembler/pi-classifier-router",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -39,7 +39,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "lint": "biome check .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "lint:python": "uvx ruff@0.16.8 check . && uvx ruff@0.16.8 format --check ."
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

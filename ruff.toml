@@ -1,0 +1,21 @@
+# Ruff config for the Python sidecar and its test fixtures.
+# Matches the TypeScript side's 120-column limit (see biome.json).
+
+target-version = "py310"
+line-length = 120
+include = ["python/**/*.py", "tests/**/*.py"]
+
+[lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # import sorting
+  "B",   # bugbear
+  "UP",  # pyupgrade (Python 3.10+ syntax)
+  "SIM", # simplifications
+  "BLE", # blind except
+]
+
+[format]
+quote-style = "double"

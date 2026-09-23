@@ -38,6 +38,16 @@ verify-bun:
   script:
     - bun test tests/
 
+# The Python sidecar and its test fixtures, linted and format-checked with Ruff
+# (config in ruff.toml). Pinned so a new Ruff release cannot fail a pipeline on
+# its own; bump the tag deliberately.
+verify-python:
+  stage: verify
+  image: ghcr.io/astral-sh/ruff:0.16.8-alpine
+  script:
+    - ruff check .
+    - ruff format --check .
+
 # ---------------------------------------------------------------------------
 # Release: pushing a vX.Y.Z tag creates the GitLab release automatically, after
 # both verify jobs pass on the tag pipeline. The notes are generated from the

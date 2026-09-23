@@ -22,6 +22,7 @@ Protocol
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -36,12 +37,14 @@ def emit(payload: dict) -> None:
 
 try:
     import laya
-except Exception as exc:  # A missing or broken install must not look like a protocol fault.
+# A missing OR broken install (torch/transformers raise all sorts at import time)
+# must be reported as unavailable, never look like a protocol fault.
+except Exception as exc:  # noqa: BLE001
     emit({"event": "error", "error": f"laya import failed: {exc!r}", "kind": "unavailable"})
     print("laya_worker: could not import laya", file=sys.stderr)
     print(traceback.format_exc(), file=sys.stderr)
     sys.stderr.flush()
-    raise SystemExit(2)
+    raise SystemExit(2) from exc
 
 
 STATE = {"agent": None, "loaded": []}
@@ -176,10 +179,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    try:
+    # flush() after every line is the real guarantee; this only helps.
+    with contextlib.suppress(AttributeError, OSError, ValueError):
         sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass  # flush() after every line is the real guarantee.
 
     if args.preload:
         ensure_agent(args)
@@ -201,7 +203,7 @@ def main() -> int:
             continue
         try:
             request = json.loads(line)
-        except Exception as exc:
+        except (ValueError, RecursionError) as exc:
             print(f"laya_worker: ignoring unparseable request line ({exc})", file=sys.stderr)
             continue
         if not isinstance(request, dict):
@@ -223,7 +225,9 @@ def main() -> int:
             reply = handle(request, args)
             if reply is not None:
                 emit(reply)
-        except BaseException as exc:
+        # Every request gets a reply, whatever the backend raised, so the client
+        # never waits out its timeout on a request the worker already abandoned.
+        except BaseException as exc:  # noqa: BLE001
             print(traceback.format_exc(), file=sys.stderr)
             emit(
                 {
