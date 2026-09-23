@@ -787,3 +787,16 @@ test("an untrusted project's config is never loaded, and trusting it reloads", a
     await h.cleanup();
   }
 });
+
+test("config warnings for unknown keys are surfaced as warnings", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url, { dryrun: true }));
+  try {
+    await h.fake.emit("session_start", {}, h.ctx);
+    const warning = h.fake.state.notifications.find((entry) => entry.message.includes("config warning"));
+    assert.ok(warning, `notifications: ${JSON.stringify(h.notifications())}`);
+    assert.equal(warning.type, "warning");
+    assert.match(warning.message, /did you mean "dryRun"/);
+  } finally {
+    await h.cleanup();
+  }
+});

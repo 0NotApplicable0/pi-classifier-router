@@ -300,6 +300,9 @@ function ensureSession(ctx: ExtensionContext, pi: ExtensionAPI): SessionState {
   for (const error of result.errors) {
     ctx.ui.notify(`${NOTIFY_PREFIX} config error: ${oneLine(error)}`, "error");
   }
+  for (const warning of result.warnings) {
+    ctx.ui.notify(`${NOTIFY_PREFIX} config warning: ${oneLine(warning)}`, "warning");
+  }
 
   if (cwdChanged || trustChanged) {
     // A reload resets runtime toggles, so say so instead of silently reverting.

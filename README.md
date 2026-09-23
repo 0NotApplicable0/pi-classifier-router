@@ -332,9 +332,19 @@ but violates the contract is rejected outright
 mis-routing is worse than leaving the model alone.
 
 Values are layered over the defaults: top-level sections (`jev`, `laya`,
-`routing`, `circuitBreaker`) merge one level deep, and the `questions`,
-`modelMapping`, and `fallbackChains` maps merge by key. Scalar and array values
-replace wholesale. Config is cached per session and reloaded when the session's
+`routing`, `circuitBreaker`) merge one level deep, and the `modelMapping` and
+`fallbackChains` maps merge by key. Scalar and array values replace wholesale,
+and so does `routing.questions`: every question is sent to the classifier on
+every prompt, so a file that declares `questions` supplies the complete set, and
+the default `task_complexity` question is not sent unless the file includes it.
+
+Every value is type-checked, and every question must be well formed (a known
+`type`, `instructions`, and at least two options or levels for `choice` and
+`score`). A bad value rejects the file. An unknown key does not: it is reported
+as a warning, with a suggestion when it looks like a misspelling (for example,
+`confidenceTreshold`), because otherwise the setting would silently keep its
+default. Keys starting with `$` (such as `$comment`) are treated as annotations
+and ignored. Config is cached per session and reloaded when the session's
 working directory changes.
 
 | key | default |

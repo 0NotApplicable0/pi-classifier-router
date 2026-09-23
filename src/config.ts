@@ -37,6 +37,8 @@ export interface ConfigLoadResult {
   config: RouterConfig | null;
   source: ConfigSource | null;
   errors: string[];
+  /** Non-fatal findings, such as unknown (likely misspelled) keys. */
+  warnings: string[];
 }
 
 /** Parses one YAML document. Supplied by the host, since only Bun has one. */
@@ -136,6 +138,89 @@ export function defaultConfig(): RouterConfig {
   };
 }
 
+/** Every key the config understands, per section, derived from the defaults. */
+function knownKeys(): Record<string, readonly string[]> {
+  const base = defaultConfig();
+  return {
+    "": Object.keys(base),
+    jev: Object.keys(base.jev),
+    laya: Object.keys(base.laya),
+    routing: Object.keys(base.routing),
+    circuitBreaker: Object.keys(base.circuitBreaker),
+  };
+}
+
+/** Keys a question object may carry. Criteria ids are free-form and not checked. */
+const QUESTION_KEYS: readonly string[] = ["type", "instructions", "criteria"];
+
+/** Classic edit distance, for "did you mean" hints on short config keys. */
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const above = row[j]!;
+      row[j] = Math.min(above + 1, row[j - 1]! + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return row[b.length]!;
+}
+
+/** `$`-prefixed keys (`$comment`, `$schema`) are annotations JSON has no other room for. */
+function isAnnotation(key: string): boolean {
+  return key.startsWith("$");
+}
+
+function unknownKeyMessage(where: string, key: string, known: readonly string[]): string {
+  const name = where === "" ? key : `${where}.${key}`;
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of known) {
+    const distance = editDistance(key.toLowerCase(), candidate.toLowerCase());
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  const hint = best !== null && bestDistance <= 2 ? `; did you mean ${JSON.stringify(best)}?` : "";
+  return `unknown key "${name}" is ignored${hint}`;
+}
+
+/**
+ * Keys the file sets that the config does not understand. A misspelled key is
+ * otherwise silently replaced by its default, which looks exactly like the
+ * setting having no effect.
+ */
+function findUnknownKeys(input: Record<string, unknown>): string[] {
+  const known = knownKeys();
+  const warnings: string[] = [];
+  for (const key of Object.keys(input)) {
+    if (!isAnnotation(key) && !known[""]!.includes(key)) warnings.push(unknownKeyMessage("", key, known[""]!));
+  }
+  for (const section of ["jev", "laya", "routing", "circuitBreaker"] as const) {
+    const value = input[section];
+    if (!isPlainObject(value)) continue;
+    for (const key of Object.keys(value)) {
+      if (!isAnnotation(key) && !known[section]!.includes(key)) warnings.push(unknownKeyMessage(section, key, known[section]!));
+    }
+  }
+  const routing = input["routing"];
+  const questions = isPlainObject(routing) ? routing["questions"] : undefined;
+  if (isPlainObject(questions)) {
+    for (const [id, question] of Object.entries(questions)) {
+      if (!isPlainObject(question)) continue;
+      for (const key of Object.keys(question)) {
+        if (!isAnnotation(key) && !QUESTION_KEYS.includes(key)) {
+          warnings.push(unknownKeyMessage(`routing.questions[${JSON.stringify(id)}]`, key, QUESTION_KEYS));
+        }
+      }
+    }
+  }
+  return warnings;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -157,8 +242,11 @@ function mergeKeyMap<T>(base: Record<string, T>, override: Record<string, T> | u
 
 /**
  * Layer a partial input over defaults. Sections merge one level deep and the
- * per-key maps (`questions`, `modelMapping`, `fallbackChains`) merge by key;
- * arrays and scalars replace wholesale. The input is never mutated.
+ * per-key maps (`modelMapping`, `fallbackChains`) merge by key; arrays and
+ * scalars replace wholesale. `questions` also replaces wholesale: every question
+ * is sent to the classifier on every prompt, so a file that declares its own set
+ * must not also pay for default questions it never asked. The input is never
+ * mutated.
  */
 function mergeConfig(base: RouterConfig, input: RouterConfigInput): RouterConfig {
   const inputRouting = input.routing;
@@ -178,7 +266,7 @@ function mergeConfig(base: RouterConfig, input: RouterConfigInput): RouterConfig
       // `null` is a meaningful value here, so an explicit null must survive `??`.
       defaultCategory:
         inputRouting?.defaultCategory !== undefined ? inputRouting.defaultCategory : routing.defaultCategory,
-      questions: mergeKeyMap(routing.questions, inputRouting?.questions),
+      questions: inputRouting?.questions !== undefined ? inputRouting.questions : { ...routing.questions },
       modelMapping: mergeKeyMap(routing.modelMapping, inputRouting?.modelMapping),
       fallbackChains: mergeKeyMap(routing.fallbackChains, inputRouting?.fallbackChains),
     },
@@ -189,22 +277,47 @@ function mergeConfig(base: RouterConfig, input: RouterConfigInput): RouterConfig
  * Validate a merged config. `input` is the caller's own file contents, when
  * available, so defaults the file never mentioned are not held against it.
  */
+/**
+ * Sections must be objects before merging: a non-object section would be
+ * spread key-by-key (a string into its characters).
+ */
+function validateSections(input: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  for (const section of ["jev", "laya", "routing", "circuitBreaker"] as const) {
+    const value = input[section];
+    if (value !== undefined && !isPlainObject(value)) {
+      errors.push(`${section} must be an object, got ${describe(value)}`);
+    }
+  }
+  return errors;
+}
+
 function validateConfig(config: RouterConfig, input?: RouterConfigInput): string[] {
   const errors: string[] = [];
 
   if (config.backend !== "jev" && config.backend !== "laya") {
     errors.push(`backend must be "jev" or "laya", got ${JSON.stringify(config.backend)}`);
   }
+  for (const key of ["enabled", "dryRun", "notify"] as const) {
+    if (typeof config[key] !== "boolean") errors.push(`${key} must be true or false, got ${describe(config[key])}`);
+  }
+  if (config.applyTo !== "all" && config.applyTo !== "main" && config.applyTo !== "subagents") {
+    errors.push(`applyTo must be "all", "main", or "subagents", got ${describe(config.applyTo)}`);
+  }
 
   const routing = config.routing;
   const questions = routing.questions;
   /** Criteria of the primary question, once it is known to be a usable choice. */
   let criteria: Record<string, unknown> | null = null;
-  if (!isPlainObject(questions) || Object.keys(questions).length === 0) {
+  if (!isNonEmptyString(routing.primaryQuestion)) {
+    errors.push(`routing.primaryQuestion must be a non-empty string, got ${describe(routing.primaryQuestion)}`);
+  } else if (!isPlainObject(questions) || Object.keys(questions).length === 0) {
     errors.push("routing.questions must be a non-empty object of questions");
   } else if (!(routing.primaryQuestion in questions)) {
+    const declared = isPlainObject(input?.routing?.questions);
     errors.push(
-      `routing.primaryQuestion ${JSON.stringify(routing.primaryQuestion)} is not present in routing.questions`,
+      `routing.primaryQuestion ${JSON.stringify(routing.primaryQuestion)} is not present in routing.questions` +
+        (declared ? " (a declared question set replaces the default questions entirely)" : ""),
     );
   } else {
     // Validate the merged question so a bad override cannot slip through.
@@ -217,6 +330,15 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
     } else {
       criteria = isPlainObject(primary.criteria) ? primary.criteria : {};
     }
+  }
+
+  if (isPlainObject(questions)) {
+    for (const [id, question] of Object.entries(questions)) errors.push(...validateQuestion(id, question));
+  }
+
+  const defaultCategory: unknown = routing.defaultCategory;
+  if (defaultCategory !== null && typeof defaultCategory !== "string") {
+    errors.push(`routing.defaultCategory must be a string or null, got ${describe(defaultCategory)}`);
   }
 
   const mapping = routing.modelMapping;
@@ -273,21 +395,47 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
   }
 
   const breaker = config.circuitBreaker;
-  if (typeof breaker.failureThreshold !== "number" || breaker.failureThreshold < 1) {
+  if (!isNumber(breaker.failureThreshold) || breaker.failureThreshold < 1) {
     errors.push(`circuitBreaker.failureThreshold must be >= 1, got ${JSON.stringify(breaker.failureThreshold)}`);
   }
-  if (typeof breaker.cooldownMs !== "number" || breaker.cooldownMs < 0) {
+  if (!isNumber(breaker.cooldownMs) || breaker.cooldownMs < 0) {
     errors.push(`circuitBreaker.cooldownMs must be >= 0, got ${JSON.stringify(breaker.cooldownMs)}`);
   }
-  if (typeof breaker.halfOpenMaxTrials !== "number" || breaker.halfOpenMaxTrials < 1) {
+  if (!isNumber(breaker.halfOpenMaxTrials) || breaker.halfOpenMaxTrials < 1) {
     errors.push(`circuitBreaker.halfOpenMaxTrials must be >= 1, got ${JSON.stringify(breaker.halfOpenMaxTrials)}`);
   }
 
-  if (typeof config.jev.timeoutMs !== "number" || config.jev.timeoutMs <= 0) {
-    errors.push(`jev.timeoutMs must be > 0, got ${JSON.stringify(config.jev.timeoutMs)}`);
+  const jev = config.jev;
+  if (!isNumber(jev.timeoutMs) || jev.timeoutMs <= 0) {
+    errors.push(`jev.timeoutMs must be > 0, got ${JSON.stringify(jev.timeoutMs)}`);
   }
-  if (typeof config.laya.timeoutMs !== "number" || config.laya.timeoutMs <= 0) {
-    errors.push(`laya.timeoutMs must be > 0, got ${JSON.stringify(config.laya.timeoutMs)}`);
+  if (!isHttpUrl(jev.endpoint)) errors.push(`jev.endpoint must be an http(s) URL, got ${describe(jev.endpoint)}`);
+  if (!isNonEmptyString(jev.model)) errors.push(`jev.model must be a non-empty string, got ${describe(jev.model)}`);
+  if (typeof jev.apiKeyEnvVar !== "string") {
+    errors.push(`jev.apiKeyEnvVar must be a string, got ${describe(jev.apiKeyEnvVar)}`);
+  }
+
+  const laya = config.laya;
+  if (!isNumber(laya.timeoutMs) || laya.timeoutMs <= 0) {
+    errors.push(`laya.timeoutMs must be > 0, got ${JSON.stringify(laya.timeoutMs)}`);
+  }
+  if (!isNumber(laya.warmupTimeoutMs) || laya.warmupTimeoutMs <= 0) {
+    errors.push(`laya.warmupTimeoutMs must be > 0, got ${JSON.stringify(laya.warmupTimeoutMs)}`);
+  }
+  for (const key of ["pythonBin", "workerScript", "repo"] as const) {
+    if (!isNonEmptyString(laya[key])) errors.push(`laya.${key} must be a non-empty string, got ${describe(laya[key])}`);
+  }
+  for (const key of ["apiKeyEnvVar", "hfTokenEnvVar"] as const) {
+    if (typeof laya[key] !== "string") errors.push(`laya.${key} must be a string, got ${describe(laya[key])}`);
+  }
+  for (const key of ["subfolder", "device"] as const) {
+    const value: unknown = laya[key];
+    if (value !== null && typeof value !== "string") {
+      errors.push(`laya.${key} must be a string or null, got ${describe(value)}`);
+    }
+  }
+  for (const key of ["router", "preload"] as const) {
+    if (typeof laya[key] !== "boolean") errors.push(`laya.${key} must be true or false, got ${describe(laya[key])}`);
   }
 
   const transport = config.laya.transport;
@@ -298,18 +446,70 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
     if (!isNonEmptyString(endpoint)) {
       errors.push('laya.endpoint must be a non-empty URL when laya.transport is "http"');
     } else {
-      let parsed: URL | null = null;
-      try {
-        parsed = new URL(endpoint);
-      } catch {
-        parsed = null;
-      }
-      if (parsed === null || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
-        errors.push(`laya.endpoint must be an http(s) URL, got ${JSON.stringify(endpoint)}`);
-      }
+      if (!isHttpUrl(endpoint)) errors.push(`laya.endpoint must be an http(s) URL, got ${JSON.stringify(endpoint)}`);
     }
   }
 
+  return errors;
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isHttpUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** A short, type-revealing rendering of a bad value for error messages. */
+function describe(value: unknown): string {
+  if (value === undefined) return "undefined";
+  const json = JSON.stringify(value);
+  return `${Array.isArray(value) ? "array" : value === null ? "null" : typeof value} ${json.length > 60 ? `${json.slice(0, 57)}...` : json}`;
+}
+
+function isInstruction(value: unknown): boolean {
+  return isNonEmptyString(value) || isPlainObject(value) || Array.isArray(value);
+}
+
+/**
+ * The shape every question must have before it is sent to a backend. A
+ * malformed question otherwise surfaces only as a protocol error on every
+ * prompt, long after the config was loaded.
+ */
+function validateQuestion(id: string, question: unknown): string[] {
+  const where = `routing.questions[${JSON.stringify(id)}]`;
+  if (!isPlainObject(question)) return [`${where} must be an object, got ${describe(question)}`];
+  const errors: string[] = [];
+  if (!isInstruction(question["instructions"])) {
+    errors.push(`${where}.instructions must be a non-empty string or a structured object/array`);
+  }
+  const criteria = question["criteria"];
+  switch (question["type"]) {
+    case "choice":
+      if (!isPlainObject(criteria) || Object.keys(criteria).length < 2) {
+        errors.push(`${where}.criteria must be an object with at least two options for a choice question`);
+      }
+      break;
+    case "score":
+      if (!Array.isArray(criteria) || criteria.length < 2) {
+        errors.push(`${where}.criteria must be an array of at least two levels for a score question`);
+      }
+      break;
+    case "noul":
+      if (criteria !== undefined && !isPlainObject(criteria)) {
+        errors.push(`${where}.criteria must be an object with optional "true"/"false" entries for a noul question`);
+      }
+      break;
+    default:
+      errors.push(`${where}.type must be "choice", "score", or "noul", got ${describe(question["type"])}`);
+  }
   return errors;
 }
 
@@ -327,6 +527,7 @@ export function loadConfig(
 ): ConfigLoadResult {
   void env;
   const errors: string[] = [];
+  const warnings: string[] = [];
   const projectTrusted = options.projectTrusted ?? true;
   // Run from the home directory, the project scope IS the global scope.
   const projectIsHome = path.resolve(cwd) === path.resolve(home);
@@ -384,17 +585,23 @@ export function loadConfig(
       continue;
     }
 
-    const config = mergeConfig(defaultConfig(), parsed as RouterConfigInput);
-    const validationErrors = validateConfig(config, parsed as RouterConfigInput);
-    if (validationErrors.length > 0) {
+    for (const message of findUnknownKeys(parsed)) {
+      warnings.push(`${source.scope} config ${source.path}: ${message}`);
+    }
+
+    const input = parsed as RouterConfigInput;
+    const sectionErrors = validateSections(parsed);
+    const config = sectionErrors.length > 0 ? null : mergeConfig(defaultConfig(), input);
+    const validationErrors = config === null ? sectionErrors : validateConfig(config, input);
+    if (config === null || validationErrors.length > 0) {
       for (const message of validationErrors) {
         errors.push(`${source.scope} config ${source.path}: ${message}`);
       }
-      return { config: null, source: null, errors };
+      return { config: null, source: null, errors, warnings };
     }
 
-    return { config, source, errors };
+    return { config, source, errors, warnings };
   }
 
-  return { config: null, source: null, errors };
+  return { config: null, source: null, errors, warnings };
 }

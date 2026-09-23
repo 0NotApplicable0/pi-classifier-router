@@ -127,6 +127,52 @@ const INVALID_INPUTS: Array<[string, unknown]> = [
   ["a fallback chain that is not an array", { routing: { fallbackChains: { "@smol": "@smol" } } }],
   ["a fallback chain containing an empty entry", { routing: { fallbackChains: { "@smol": ["@smol", "  "] } } }],
   ["a fallback chain containing a non-string", { routing: { fallbackChains: { "@smol": ["@smol", 7] } } }],
+  ["an applyTo outside the enum", { applyTo: "Main" }],
+  ["a string for a boolean flag", { enabled: "false" }],
+  ["a non-boolean dryRun", { dryRun: 1 }],
+  ["a section that is not an object", { jev: "https://example.test" }],
+  ["a routing section that is an array", { routing: [] }],
+  ["a jev endpoint that is not a URL", { jev: { endpoint: "not a url" } }],
+  ["a jev endpoint with a non-http scheme", { jev: { endpoint: "file:///etc/passwd" } }],
+  ["an empty jev model", { jev: { model: "" } }],
+  ["a non-string jev apiKeyEnvVar", { jev: { apiKeyEnvVar: 5 } }],
+  ["a non-positive laya warmupTimeoutMs", { laya: { warmupTimeoutMs: 0 } }],
+  ["an empty laya pythonBin", { laya: { pythonBin: " " } }],
+  ["a non-boolean laya preload", { laya: { preload: "yes" } }],
+  ["a numeric laya device", { laya: { device: 0 } }],
+  ["a non-finite breaker cooldown", { circuitBreaker: { cooldownMs: null } }],
+  ["a numeric defaultCategory", { routing: { defaultCategory: 3 } }],
+  ["an empty primaryQuestion", { routing: { primaryQuestion: "" } }],
+  [
+    "a secondary question with an unknown type",
+    {
+      routing: {
+        questions: {
+          task_complexity: { type: "choice", instructions: "How hard?", criteria: { trivial: null, standard: null, hard: null } },
+          risky: { type: "boolean", instructions: "Is it risky?" },
+        },
+      },
+    },
+  ],
+  [
+    "a choice question with a single option",
+    { routing: { questions: { task_complexity: { type: "choice", instructions: "How hard?", criteria: { hard: null } } } } },
+  ],
+  [
+    "a score question with one level",
+    {
+      routing: {
+        questions: {
+          task_complexity: { type: "choice", instructions: "How hard?", criteria: { trivial: null, standard: null, hard: null } },
+          depth: { type: "score", instructions: "How deep?", criteria: ["shallow"] },
+        },
+      },
+    },
+  ],
+  [
+    "a question without instructions",
+    { routing: { questions: { task_complexity: { type: "choice", criteria: { trivial: null, hard: null } } } } },
+  ],
 ];
 
 for (const [label, input] of INVALID_INPUTS) {
@@ -460,4 +506,112 @@ test("run from the home directory, the global file loads as global even when unt
   assert.equal(result.source?.scope, "global");
   assert.equal(result.config?.enabled, false);
   assert.deepEqual(result.errors, []);
+});
+
+// ---------------------------------------------------------------------------
+// A declared question set is the whole set: every question is sent to the
+// classifier on every prompt, so defaults must not ride along.
+// ---------------------------------------------------------------------------
+
+test("a declared question set replaces the default questions", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({
+      routing: {
+        questions: {
+          effort: { type: "choice", instructions: "How much effort?", criteria: { small: "quick", big: "slow" } },
+        },
+        primaryQuestion: "effort",
+        modelMapping: { small: "@smol", big: "@slow" },
+      },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+  assert.deepEqual(Object.keys(result.config.routing.questions), ["effort"]);
+});
+
+test("omitting questions keeps the default question set", (t) => {
+  const { cwd, home } = workspace(t, { global: JSON.stringify({ routing: { confidenceThreshold: 0.7 } }) });
+  const result = loadConfig(cwd, home);
+  assert.deepEqual(Object.keys(result.config?.routing.questions ?? {}), ["task_complexity"]);
+});
+
+test("a declared set that drops the primary question explains that it replaced the defaults", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({
+      routing: { questions: { risky: { type: "noul", instructions: "Is it risky?" } } },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.equal(result.config, null);
+  assert.match(result.errors.join("\n"), /task_complexity.*replaces the default questions entirely/);
+});
+
+// ---------------------------------------------------------------------------
+// Unknown keys warn (they would otherwise silently keep their defaults) but do
+// not reject the file.
+// ---------------------------------------------------------------------------
+
+test("a misspelled key warns with a suggestion and the file still loads", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({ dryrun: true, routing: { confidenceTreshold: 0.9 } }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.config.dryRun, false);
+  assert.equal(result.config.routing.confidenceThreshold, 0.5);
+  assert.equal(result.warnings.length, 2);
+  assert.match(result.warnings[0]!, /unknown key "dryrun" is ignored; did you mean "dryRun"\?/);
+  assert.match(
+    result.warnings[1]!,
+    /unknown key "routing\.confidenceTreshold" is ignored; did you mean "confidenceThreshold"\?/,
+  );
+});
+
+test("an unrelated unknown key warns without a suggestion", (t) => {
+  const { cwd, home } = workspace(t, { global: JSON.stringify({ jev: { region: "eu" } }) });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0]!, /unknown key "jev\.region" is ignored$/);
+});
+
+test("unknown keys inside a question warn, criteria ids do not", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({
+      routing: {
+        questions: {
+          task_complexity: {
+            type: "choice",
+            instruction: "typo",
+            instructions: "How hard?",
+            criteria: { trivial: null, standard: null, anything_goes: null, hard: null },
+          },
+        },
+      },
+    }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0]!, /routing\.questions\["task_complexity"\]\.instruction" is ignored; did you mean "instructions"/);
+});
+
+test("$-prefixed annotation keys such as $comment never warn", (t) => {
+  const { cwd, home } = workspace(t, {
+    global: JSON.stringify({ $comment: "top", $schema: "x", routing: { $comment: "nested" } }),
+  });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("the shipped JSON example loads with no errors or warnings", (t) => {
+  const example = fs.readFileSync(path.join(import.meta.dirname, "..", "examples", "class-router.json"), "utf8");
+  const { cwd, home } = workspace(t, { global: example });
+  const result = loadConfig(cwd, home);
+  assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.warnings, []);
 });
