@@ -203,9 +203,8 @@ test("a missing pi.logger does not break routing or failure reporting", async ()
 });
 
 test("agent_end errors still open the circuit on the pi path", async () => {
-  const h = await piHarness(
-    { answers: choice("hard", 0.92) },
-    (url) => piConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 3 }) }),
+  const h = await piHarness({ answers: choice("hard", 0.92) }, (url) =>
+    piConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 3 }) }),
   );
   try {
     await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
@@ -231,9 +230,8 @@ test("agent_end errors still open the circuit on the pi path", async () => {
 });
 
 test("auto_retry_start on a host that does not emit it neither throws nor double-counts", async () => {
-  const h = await piHarness(
-    { answers: choice("hard", 0.92) },
-    (url) => piConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 2 }) }),
+  const h = await piHarness({ answers: choice("hard", 0.92) }, (url) =>
+    piConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 2 }) }),
   );
   try {
     await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
@@ -249,7 +247,11 @@ test("auto_retry_start on a host that does not emit it neither throws nor double
     const command = h.fake.commands.get("class-router");
     assert.ok(command, "class-router command was not registered");
     await command.handler("status", h.ctx);
-    const breakerLine = h.notifications().filter((message) => message.includes("breaker: ")).at(-1) ?? "";
+    const breakerLine =
+      h
+        .notifications()
+        .filter((message) => message.includes("breaker: "))
+        .at(-1) ?? "";
     assert.match(breakerLine, /test\/slow-model=closed\/1/);
 
     await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
@@ -260,9 +262,8 @@ test("auto_retry_start on a host that does not emit it neither throws nor double
 });
 
 test("auto_retry_start still drives attribution on the omp host", async () => {
-  const h = await harness(
-    { answers: choice("hard", 0.92) },
-    (url) => baseConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 1 }) }),
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 1 }) }),
   );
   try {
     assert.ok(h.fake.ctx.models, "the omp host must expose the models facade");
@@ -440,9 +441,8 @@ test("setModel returning false records no breaker failure for the spec", async (
 });
 
 test("repeated retry failures open the circuit and the next routing attempt falls back", async () => {
-  const h = await harness(
-    { answers: choice("hard", 0.92) },
-    (url) => baseConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 3 }) }),
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 3 }) }),
   );
   try {
     await h.fake.emit("before_agent_start", { prompt: "Refactor the entire auth subsystem" }, h.ctx);
@@ -470,16 +470,16 @@ test("repeated retry failures open the circuit and the next routing attempt fall
 });
 
 test("an automatic continuation is neither a success nor a failure", async () => {
-  const h = await harness(
-    { answers: choice("hard", 0.92) },
-    (url) => baseConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 1 }) }),
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, { circuitBreaker: nextBreaker({ failureThreshold: 1 }) }),
   );
   try {
     await h.fake.emit("before_agent_start", { prompt: "Refactor the entire auth subsystem" }, h.ctx);
     const command = h.fake.commands.get("class-router");
     assert.ok(command, "class-router command was not registered");
     const breakerLine = () =>
-      h.notifications()
+      h
+        .notifications()
         .filter((message) => message.includes("breaker: "))
         .at(-1) ?? "<no breaker line>";
 
@@ -494,11 +494,7 @@ test("an automatic continuation is neither a success nor a failure", async () =>
 
     // A successful automatic continuation must not close (reset) the circuit.
     await h.fake.emit("auto_retry_start", { errorMessage: "429 Too Many Requests", attempt: 1 }, h.ctx);
-    await h.fake.emit(
-      "agent_end",
-      { messages: [{ role: "assistant", stopReason: "end" }], willContinue: true },
-      h.ctx,
-    );
+    await h.fake.emit("agent_end", { messages: [{ role: "assistant", stopReason: "end" }], willContinue: true }, h.ctx);
     await command.handler("status", h.ctx);
     assert.match(breakerLine(), /@slow=open\/1/);
 
@@ -848,7 +844,14 @@ function layaSession(timeoutMs: number): LayaSession {
     path.join(cwd, ".omp", "class-router.json"),
     JSON.stringify({
       backend: "laya",
-      laya: { pythonBin: "python3", workerScript: STUB_LAYA, repo: "stub/repo", router: false, preload: false, timeoutMs },
+      laya: {
+        pythonBin: "python3",
+        workerScript: STUB_LAYA,
+        repo: "stub/repo",
+        router: false,
+        preload: false,
+        timeoutMs,
+      },
       circuitBreaker: nextBreaker(),
       notify: false,
     }),
@@ -864,7 +867,10 @@ async function prompt(session: LayaSession): Promise<void> {
 
 function spawnCount(logFile: string): number {
   if (!fs.existsSync(logFile)) return 0;
-  return fs.readFileSync(logFile, "utf8").split("\n").filter((line) => line !== "").length;
+  return fs
+    .readFileSync(logFile, "utf8")
+    .split("\n")
+    .filter((line) => line !== "").length;
 }
 
 const hasPython = !spawnSync("python3", ["--version"]).error;
@@ -887,7 +893,11 @@ test(
       // One sidecar per distinct config, not one per switch.
       assert.equal(spawnCount(logFile), 2);
       for (const session of [first, second]) {
-        assert.ok(session.fake.state.entries.every((entry) => (entry.data as { reason: string }).reason !== "classification-failed"));
+        assert.ok(
+          session.fake.state.entries.every(
+            (entry) => (entry.data as { reason: string }).reason !== "classification-failed",
+          ),
+        );
       }
 
       // A third session with the first one's config shares its sidecar.

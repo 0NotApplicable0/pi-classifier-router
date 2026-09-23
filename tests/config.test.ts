@@ -148,7 +148,11 @@ const INVALID_INPUTS: Array<[string, unknown]> = [
     {
       routing: {
         questions: {
-          task_complexity: { type: "choice", instructions: "How hard?", criteria: { trivial: null, standard: null, hard: null } },
+          task_complexity: {
+            type: "choice",
+            instructions: "How hard?",
+            criteria: { trivial: null, standard: null, hard: null },
+          },
           risky: { type: "boolean", instructions: "Is it risky?" },
         },
       },
@@ -156,14 +160,22 @@ const INVALID_INPUTS: Array<[string, unknown]> = [
   ],
   [
     "a choice question with a single option",
-    { routing: { questions: { task_complexity: { type: "choice", instructions: "How hard?", criteria: { hard: null } } } } },
+    {
+      routing: {
+        questions: { task_complexity: { type: "choice", instructions: "How hard?", criteria: { hard: null } } },
+      },
+    },
   ],
   [
     "a score question with one level",
     {
       routing: {
         questions: {
-          task_complexity: { type: "choice", instructions: "How hard?", criteria: { trivial: null, standard: null, hard: null } },
+          task_complexity: {
+            type: "choice",
+            instructions: "How hard?",
+            criteria: { trivial: null, standard: null, hard: null },
+          },
           depth: { type: "score", instructions: "How deep?", criteria: ["shallow"] },
         },
       },
@@ -239,22 +251,13 @@ test("a partial file without laya.transport keeps the python default", (t) => {
 const INVALID_TRANSPORT_INPUTS: Array<[string, unknown]> = [
   ["an unknown transport", { laya: { transport: "grpc" } }],
   ["a non-string transport", { laya: { transport: 7 } }],
-  [
-    "an http transport with no endpoint",
-    { laya: { transport: "http" } },
-  ],
-  [
-    "an http transport with a blank endpoint",
-    { laya: { transport: "http", endpoint: "   " } },
-  ],
+  ["an http transport with no endpoint", { laya: { transport: "http" } }],
+  ["an http transport with a blank endpoint", { laya: { transport: "http", endpoint: "   " } }],
   [
     "an http transport with a non-http endpoint",
     { laya: { transport: "http", endpoint: "ftp://gpu.example/classify" } },
   ],
-  [
-    "an http transport with a relative endpoint",
-    { laya: { transport: "http", endpoint: "/classify" } },
-  ],
+  ["an http transport with a relative endpoint", { laya: { transport: "http", endpoint: "/classify" } }],
 ];
 
 for (const [label, input] of INVALID_TRANSPORT_INPUTS) {
@@ -595,7 +598,10 @@ test("unknown keys inside a question warn, criteria ids do not", (t) => {
   const result = loadConfig(cwd, home);
   assert.ok(result.config, `errors: ${JSON.stringify(result.errors)}`);
   assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0]!, /routing\.questions\["task_complexity"\]\.instruction" is ignored; did you mean "instructions"/);
+  assert.match(
+    result.warnings[0]!,
+    /routing\.questions\["task_complexity"\]\.instruction" is ignored; did you mean "instructions"/,
+  );
 });
 
 test("$-prefixed annotation keys such as $comment never warn", (t) => {

@@ -37,9 +37,12 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "lint": "biome check .",
+    "format": "biome format --write ."
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.14",
     "@earendil-works/pi-coding-agent": "^0.87.1",
     "@types/node": "^24.13.6",
     "typescript": "^5.9.0"

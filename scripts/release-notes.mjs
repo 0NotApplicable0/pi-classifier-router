@@ -20,8 +20,7 @@ if (!tag) {
   process.exit(2);
 }
 
-const git = (...args) =>
-  execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
 let previous = "";
 try {
@@ -51,8 +50,7 @@ const sections = log
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const version = tag.replace(/^v/, "");
-const projectUrl =
-  process.env.CI_PROJECT_URL ?? String(pkg.homepage ?? "").replace(/#readme$/, "");
+const projectUrl = process.env.CI_PROJECT_URL ?? String(pkg.homepage ?? "").replace(/#readme$/, "");
 
 const lines = [
   `npm: [\`${pkg.name}@${version}\`](https://www.npmjs.com/package/${pkg.name}/v/${version})`,

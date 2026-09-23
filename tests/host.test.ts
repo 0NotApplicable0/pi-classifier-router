@@ -20,7 +20,6 @@ import {
   registerEvent,
   type HostCapabilities,
   type HostModel,
-  type HostModels,
   type HostTimers,
 } from "../src/host.ts";
 
@@ -52,8 +51,7 @@ function piContext(overrides: Record<string, unknown> = {}): Record<string, unkn
   return {
     model: DEFAULT,
     modelRegistry: {
-      find: (provider: string, id: string) =>
-        provider === "test" && id === "slow-model" ? SLOW : undefined,
+      find: (provider: string, id: string) => (provider === "test" && id === "slow-model" ? SLOW : undefined),
     },
     ...overrides,
   };
@@ -65,7 +63,9 @@ function piContext(overrides: Record<string, unknown> = {}): Record<string, unkn
  * swapping the globals lets the test fire and inspect timers with no wall-clock
  * wait at all.
  */
-function withFakeClock(run: (clock: { scheduled: Array<{ callback: () => void; ms: number }>; cleared: unknown[] }) => void): void {
+function withFakeClock(
+  run: (clock: { scheduled: Array<{ callback: () => void; ms: number }>; cleared: unknown[] }) => void,
+): void {
   const nativeSetTimeout = globalThis.setTimeout;
   const nativeClearTimeout = globalThis.clearTimeout;
   const scheduled: Array<{ callback: () => void; ms: number }> = [];
@@ -73,7 +73,8 @@ function withFakeClock(run: (clock: { scheduled: Array<{ callback: () => void; m
   let nextHandle = 0;
 
   (globalThis as { setTimeout: unknown }).setTimeout = (callback: () => void, ms?: number) => {
-    const handle = (nextHandle += 1);
+    nextHandle += 1;
+    const handle = nextHandle;
     scheduled.push({ callback, ms: ms ?? 0 });
     return handle;
   };
@@ -191,14 +192,23 @@ test("resolveModel splits on the first slash only", () => {
 });
 
 test("resolveModel returns the live model when the spec matches it", () => {
-  const byId = detectHost(piContext({
-    model: { id: "slow-model", provider: "test" },
-    modelRegistry: {},
-  }));
-  assert.deepEqual(resolveModel(byId, piContext({
-    model: { id: "slow-model", provider: "test" },
-    modelRegistry: {},
-  }), "slow-model"), SLOW);
+  const byId = detectHost(
+    piContext({
+      model: { id: "slow-model", provider: "test" },
+      modelRegistry: {},
+    }),
+  );
+  assert.deepEqual(
+    resolveModel(
+      byId,
+      piContext({
+        model: { id: "slow-model", provider: "test" },
+        modelRegistry: {},
+      }),
+      "slow-model",
+    ),
+    SLOW,
+  );
 
   const byProviderId = detectHost(piContext({ modelRegistry: {} }));
   assert.deepEqual(resolveModel(byProviderId, piContext({ modelRegistry: {} }), "test/default-model"), DEFAULT);
@@ -288,9 +298,13 @@ test("startTimer fires exactly once on the raw path", () => {
 
   withFakeClock((clock) => {
     let fired = 0;
-    startTimer(caps, () => {
-      fired += 1;
-    }, 5);
+    startTimer(
+      caps,
+      () => {
+        fired += 1;
+      },
+      5,
+    );
 
     assert.equal(clock.scheduled.length, 1);
     assert.equal(clock.scheduled[0]!.ms, 5);
@@ -307,9 +321,13 @@ test("startTimer cancel() clears the raw timer and stops the callback", () => {
 
   withFakeClock((clock) => {
     let fired = 0;
-    const timer = startTimer(caps, () => {
-      fired += 1;
-    }, 5);
+    const timer = startTimer(
+      caps,
+      () => {
+        fired += 1;
+      },
+      5,
+    );
 
     timer.cancel();
     timer.cancel();
@@ -328,7 +346,8 @@ test("startTimer delegates to managed timers and cancel() clears them", () => {
 
   const timers: HostTimers = {
     setTimeout(callback, ms) {
-      const handle = { handle: (nextHandle += 1) };
+      nextHandle += 1;
+      const handle = { handle: nextHandle };
       created.push({ callback, ms, handle });
       return handle;
     },
@@ -339,9 +358,13 @@ test("startTimer delegates to managed timers and cancel() clears them", () => {
   const caps: HostCapabilities = { name: "omp", timers, retryEvents: true };
 
   let fired = 0;
-  const timer = startTimer(caps, () => {
-    fired += 1;
-  }, 10);
+  const timer = startTimer(
+    caps,
+    () => {
+      fired += 1;
+    },
+    10,
+  );
 
   assert.equal(created.length, 1);
   assert.equal(created[0]!.ms, 10);
@@ -372,17 +395,25 @@ test("startTimer falls back to a raw timer when the managed one throws", () => {
 
   withFakeClock((clock) => {
     let fired = 0;
-    const timer = startTimer(caps, () => {
-      fired += 1;
-    }, 5);
+    const timer = startTimer(
+      caps,
+      () => {
+        fired += 1;
+      },
+      5,
+    );
 
     assert.equal(clock.scheduled.length, 1);
     clock.scheduled[0]!.callback();
     assert.equal(fired, 1);
 
-    const second = startTimer(caps, () => {
-      fired += 1;
-    }, 5);
+    const second = startTimer(
+      caps,
+      () => {
+        fired += 1;
+      },
+      5,
+    );
     second.cancel();
     clock.scheduled[1]!.callback();
     assert.equal(fired, 1);
@@ -519,8 +550,20 @@ test("registerEvent returns false and does not throw when the host rejects the e
 });
 
 test("registerEvent returns false for hosts without a usable on()", () => {
-  assert.equal(registerEvent(null, "before_agent_start", () => undefined), false);
-  assert.equal(registerEvent(undefined, "before_agent_start", () => undefined), false);
-  assert.equal(registerEvent({}, "before_agent_start", () => undefined), false);
-  assert.equal(registerEvent({ on: 3 }, "before_agent_start", () => undefined), false);
+  assert.equal(
+    registerEvent(null, "before_agent_start", () => undefined),
+    false,
+  );
+  assert.equal(
+    registerEvent(undefined, "before_agent_start", () => undefined),
+    false,
+  );
+  assert.equal(
+    registerEvent({}, "before_agent_start", () => undefined),
+    false,
+  );
+  assert.equal(
+    registerEvent({ on: 3 }, "before_agent_start", () => undefined),
+    false,
+  );
 });

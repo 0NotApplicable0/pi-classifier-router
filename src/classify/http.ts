@@ -67,11 +67,7 @@ export function createHttpClassifier(options: HttpClassifierOptions, deps: Class
       const bearer = token();
       const envVar = options.apiKeyEnvVar;
       if (bearer === "" && envVar.trim() !== "") {
-        throw new ClassifierError(
-          backend,
-          "unavailable",
-          `${envVar} is not set; ${backend} is unavailable`,
-        );
+        throw new ClassifierError(backend, "unavailable", `${envVar} is not set; ${backend} is unavailable`);
       }
 
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -110,11 +106,7 @@ export function createHttpClassifier(options: HttpClassifierOptions, deps: Class
                 ? "unavailable"
                 : "protocol";
           const collapsed = bodyText.replace(/\s+/g, " ").trim().slice(0, SNIPPET_LIMIT);
-          throw new ClassifierError(
-            backend,
-            code,
-            `${backend} endpoint returned ${response.status}: ${collapsed}`,
-          );
+          throw new ClassifierError(backend, code, `${backend} endpoint returned ${response.status}: ${collapsed}`);
         }
 
         let parsed: unknown;
@@ -151,12 +143,9 @@ export function createHttpClassifier(options: HttpClassifierOptions, deps: Class
             });
           }
           if (timedOut) {
-            throw new ClassifierError(
-              backend,
-              "timeout",
-              `${backend} request exceeded ${options.timeoutMs}ms`,
-              { cause: error },
-            );
+            throw new ClassifierError(backend, "timeout", `${backend} request exceeded ${options.timeoutMs}ms`, {
+              cause: error,
+            });
           }
         }
         throw new ClassifierError(

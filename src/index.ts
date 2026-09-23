@@ -32,14 +32,7 @@ import {
 } from "./host.ts";
 import { decide } from "./router.ts";
 import { ClassifierError } from "./types.ts";
-import type {
-  Answer,
-  ClassificationResult,
-  Classifier,
-  Decision,
-  DecisionReason,
-  RouterConfig,
-} from "./types.ts";
+import type { Answer, ClassificationResult, Classifier, Decision, DecisionReason, RouterConfig } from "./types.ts";
 
 const NOTIFY_PREFIX = "[class-router]";
 const HISTORY_LIMIT = 50;
@@ -264,7 +257,10 @@ function getClassifier(state: SessionState, pi: ExtensionAPI): Classifier | null
     } catch (error) {
       // A backend that cannot even be constructed must not take the extension down.
       const message = error instanceof Error ? error.message : String(error);
-      log(pi, "warn", "class-router: classifier construction failed", { backend: state.config.backend, error: message });
+      log(pi, "warn", "class-router: classifier construction failed", {
+        backend: state.config.backend,
+        error: message,
+      });
       return null;
     }
     classifiers.set(key, entry);
@@ -362,7 +358,12 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function notify(ctx: ExtensionContext, state: SessionState | null, message: string, type?: "info" | "warning" | "error"): void {
+function notify(
+  ctx: ExtensionContext,
+  state: SessionState | null,
+  message: string,
+  type?: "info" | "warning" | "error",
+): void {
   if (state !== null && !state.config.notify && type !== "error") return;
   ctx.ui.notify(`${NOTIFY_PREFIX} ${oneLine(message)}`, type);
 }
@@ -413,9 +414,7 @@ async function classifyGuarded(
       () => {
         // Settle the race as a timeout BEFORE aborting: an abort listener can
         // reject the backend's promise synchronously, as a caller abort.
-        reject(
-          new ClassifierError(classifier.name, "timeout", `classification exceeded ${budgetMs}ms hard guard`),
-        );
+        reject(new ClassifierError(classifier.name, "timeout", `classification exceeded ${budgetMs}ms hard guard`));
         controller.abort();
       },
       budgetMs + HARD_GUARD_SLACK_MS,
@@ -426,7 +425,10 @@ async function classifyGuarded(
   hardGuard.catch(() => undefined);
 
   try {
-    return await Promise.race([classifier.classify(prompt, config.routing.questions, { signal: controller.signal }), hardGuard]);
+    return await Promise.race([
+      classifier.classify(prompt, config.routing.questions, { signal: controller.signal }),
+      hardGuard,
+    ]);
   } finally {
     cancelGuard();
   }
@@ -483,11 +485,7 @@ function noDecision(
   };
 }
 
-async function onBeforeAgentStart(
-  pi: ExtensionAPI,
-  event: { prompt: string },
-  ctx: ExtensionContext,
-): Promise<void> {
+async function onBeforeAgentStart(pi: ExtensionAPI, event: { prompt: string }, ctx: ExtensionContext): Promise<void> {
   try {
     const state = ensureSession(ctx, pi);
     // A new run means any earlier run has ended; a probe it never settled is stale.
@@ -604,8 +602,7 @@ async function applyDecision(
 
   const capabilities = detectHost(ctx);
 
-  // Unannotated `let`: the resolved model type is not exported by the package.
-  let model;
+  let model: ReturnType<typeof resolveModel>;
   try {
     model = resolveModel(capabilities, ctx, decision.apply);
   } catch (error) {
@@ -681,10 +678,7 @@ function runFailed(messages: readonly unknown[]): boolean {
   return false;
 }
 
-function onAgentEnd(
-  event: { messages: readonly unknown[]; willContinue?: boolean },
-  ctx: ExtensionContext,
-): void {
+function onAgentEnd(event: { messages: readonly unknown[]; willContinue?: boolean }, ctx: ExtensionContext): void {
   try {
     // An automatic continuation is not a settle: leave the breaker untouched.
     if (event.willContinue === true) return;
@@ -726,11 +720,7 @@ function onAgentEnd(
   }
 }
 
-function onAutoRetryStart(
-  pi: ExtensionAPI,
-  event: { errorMessage: string },
-  ctx: ExtensionContext,
-): void {
+function onAutoRetryStart(pi: ExtensionAPI, event: { errorMessage: string }, ctx: ExtensionContext): void {
   try {
     const state = sessions.get(sessionKey(ctx));
     if (state === undefined || state.appliedSpec === null) return;
@@ -757,10 +747,7 @@ function onAutoRetryStart(
   }
 }
 
-function onAutoRetryEnd(
-  event: { success: boolean },
-  ctx: ExtensionContext,
-): void {
+function onAutoRetryEnd(event: { success: boolean }, ctx: ExtensionContext): void {
   try {
     if (!event.success) return;
 
@@ -810,9 +797,7 @@ function commandStatus(ctx: ExtensionContext, state: SessionState): void {
         `${last.changed ? "model changed" : `model unchanged${last.resolved ? ` (already ${last.resolved})` : ""}`})`,
     );
   }
-  ctx.ui.notify(
-    `${NOTIFY_PREFIX} session: ${state.routed} routed, ${state.skipped} skipped, ${state.failed} failed`,
-  );
+  ctx.ui.notify(`${NOTIFY_PREFIX} session: ${state.routed} routed, ${state.skipped} skipped, ${state.failed} failed`);
 }
 
 function commandExplain(ctx: ExtensionContext, state: SessionState): void {

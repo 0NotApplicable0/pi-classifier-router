@@ -63,8 +63,12 @@ if (config === null) {
   process.exit(1);
 }
 
-console.log(`smoke-live: config ${source?.path ?? "<defaults>"} | backend ${config.backend} | endpoint ${config.jev.endpoint}`);
-console.log(`smoke-live: primary question ${config.routing.primaryQuestion} | mapping ${JSON.stringify(config.routing.modelMapping)}`);
+console.log(
+  `smoke-live: config ${source?.path ?? "<defaults>"} | backend ${config.backend} | endpoint ${config.jev.endpoint}`,
+);
+console.log(
+  `smoke-live: primary question ${config.routing.primaryQuestion} | mapping ${JSON.stringify(config.routing.modelMapping)}`,
+);
 
 const classifier = createClassifier(config);
 let failures = 0;
@@ -76,7 +80,9 @@ try {
     try {
       const result = await classifier.classify(sample.prompt, config.routing.questions);
       const decision = decide(config, result.answers);
-      console.log(`decision: category=${decision.category ?? "none"} confidence=${decision.confidence.toFixed(2)} reason=${decision.reason}`);
+      console.log(
+        `decision: category=${decision.category ?? "none"} confidence=${decision.confidence.toFixed(2)} reason=${decision.reason}`,
+      );
       console.log(`would route to: ${decision.apply ?? "(leave session model alone)"}`);
       console.log(`chain: ${decision.chain.length === 0 ? "none" : decision.chain.join(" -> ")}`);
       console.log("raw answers:");

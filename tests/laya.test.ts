@@ -71,17 +71,15 @@ async function rejection(promise: Promise<unknown>, code: string): Promise<Class
 const probe = spawnSync(PYTHON, ["--version"], { encoding: "utf8" });
 
 if (probe.error || probe.status !== 0) {
-  test(
-    "laya classifier suite",
-    { skip: `skipping laya tests: ${PYTHON} is unavailable (${probe.error?.message ?? `exit ${probe.status}`})` },
-    () => {},
-  );
+  test("laya classifier suite", {
+    skip: `skipping laya tests: ${PYTHON} is unavailable (${probe.error?.message ?? `exit ${probe.status}`})`,
+  }, () => {});
 } else {
   test("correlates interleaved calls and resolves a relative worker script", async (t) => {
-    const laya = createLayaClassifier(
-      config({ workerScript: path.relative(REPO_ROOT, STUB) }),
-      { extensionRoot: REPO_ROOT, env: {} },
-    );
+    const laya = createLayaClassifier(config({ workerScript: path.relative(REPO_ROOT, STUB) }), {
+      extensionRoot: REPO_ROOT,
+      env: {},
+    });
     t.after?.(() => laya.dispose());
 
     assert.equal(laya.name, "laya");
@@ -136,7 +134,10 @@ if (probe.error || probe.status !== 0) {
   });
 
   /** The argv the stub worker was started with, read back from its stderr. */
-  async function argvFor(overrides: Partial<LayaBackendConfig>, t: { after?: (fn: () => unknown) => void }): Promise<string[]> {
+  async function argvFor(
+    overrides: Partial<LayaBackendConfig>,
+    t: { after?: (fn: () => unknown) => void },
+  ): Promise<string[]> {
     const logs: string[] = [];
     const laya = createLayaClassifier(config(overrides), { env: {}, logger: (message) => logs.push(message) });
     t.after?.(() => laya.dispose());
@@ -147,7 +148,13 @@ if (probe.error || probe.status !== 0) {
   }
 
   test("maxLoaded reaches the worker only in router mode", async (t) => {
-    assert.deepEqual(await argvFor({ router: true, maxLoaded: 3 }, t), ["--repo", "stub/repo", "--router", "--max-loaded", "3"]);
+    assert.deepEqual(await argvFor({ router: true, maxLoaded: 3 }, t), [
+      "--repo",
+      "stub/repo",
+      "--router",
+      "--max-loaded",
+      "3",
+    ]);
     // null leaves Laya's own default in charge.
     assert.deepEqual(await argvFor({ router: true, maxLoaded: null }, t), ["--repo", "stub/repo", "--router"]);
     assert.deepEqual(await argvFor({ router: false, maxLoaded: 3 }, t), ["--repo", "stub/repo"]);

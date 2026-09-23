@@ -110,22 +110,12 @@ export interface Classifier {
    * `classify` MUST still work without a prior `warmup` call.
    */
   warmup?(options?: ClassifyOptions): Promise<void>;
-  classify(
-    state: ClassifierState,
-    questions: Questions,
-    options?: ClassifyOptions,
-  ): Promise<ClassificationResult>;
+  classify(state: ClassifierState, questions: Questions, options?: ClassifyOptions): Promise<ClassificationResult>;
   /** Release resources (HTTP handles, sidecar processes). Idempotent. */
   dispose(): Promise<void>;
 }
 
-export type ClassifierErrorCode =
-  | "unavailable"
-  | "timeout"
-  | "auth"
-  | "transport"
-  | "protocol"
-  | "aborted";
+export type ClassifierErrorCode = "unavailable" | "timeout" | "auth" | "transport" | "protocol" | "aborted";
 
 export class ClassifierError extends Error {
   readonly code: ClassifierErrorCode;

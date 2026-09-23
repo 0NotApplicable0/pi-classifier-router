@@ -229,9 +229,7 @@ export function createFakeContext(state: FakeContextState, options: FakeContextO
     });
     ctx.modelRegistry = {
       find: (provider: string, id: string) =>
-        state.listModels.find(
-          (model) => model.id === id && (provider === "" || model.provider === provider),
-        ),
+        state.listModels.find((model) => model.id === id && (provider === "" || model.provider === provider)),
       getAvailable: () => [...state.listModels],
       getAll: () => [...state.listModels],
       hasConfiguredAuth: () => true,

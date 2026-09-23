@@ -130,11 +130,7 @@ function matchesSpec(model: HostModel, provider: string, id: string): boolean {
  * Role aliases cannot be resolved without the facade; an unresolvable spec
  * returns undefined and the caller leaves the session model alone.
  */
-export function resolveModel(
-  capabilities: HostCapabilities,
-  ctx: unknown,
-  spec: string,
-): HostModel | undefined {
+export function resolveModel(capabilities: HostCapabilities, ctx: unknown, spec: string): HostModel | undefined {
   const facade = capabilities.models;
   if (facade !== undefined) {
     try {
@@ -221,7 +217,7 @@ export function currentModel(capabilities: HostCapabilities, ctx: unknown): Host
  * the host cannot say, and the caller then relies on `setModel`'s result.
  */
 export function hasConfiguredAuth(
-  capabilities: HostCapabilities,
+  _capabilities: HostCapabilities,
   ctx: unknown,
   model: HostModel,
 ): boolean | undefined {
@@ -263,11 +259,7 @@ export async function applyModel(pi: unknown, model: HostModel): Promise<boolean
  * has none, so a raw timer is used there. Both handles are always cleared, so a
  * cancel after fire is harmless.
  */
-export function startTimer(
-  capabilities: HostCapabilities,
-  callback: () => void,
-  ms: number,
-): { cancel(): void } {
+export function startTimer(capabilities: HostCapabilities, callback: () => void, ms: number): { cancel(): void } {
   let cancelled = false;
   const fire = (): void => {
     if (cancelled) return;
@@ -346,11 +338,7 @@ export function log(
  * guarded so an unsupported or validating host can never break extension load.
  * Returns whether registration was accepted.
  */
-export function registerEvent(
-  pi: unknown,
-  event: string,
-  handler: HostEventHandler,
-): boolean {
+export function registerEvent(pi: unknown, event: string, handler: HostEventHandler): boolean {
   if (!isObject(pi)) return false;
   const on = pi["on"];
   if (!isFunction(on)) return false;

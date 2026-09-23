@@ -45,7 +45,12 @@ const server = http.createServer((request, response) => {
         response.writeHead(200, { "Content-Type": "application/json" });
         // `extra` proves unknown fields are dropped rather than passed through.
         response.end(
-          JSON.stringify({ model: "jev-stub", answers: ANSWERS, usage: { input_tokens: 7, output_tokens: 3 }, extra: true }),
+          JSON.stringify({
+            model: "jev-stub",
+            answers: ANSWERS,
+            usage: { input_tokens: 7, output_tokens: 3 },
+            extra: true,
+          }),
         );
         return;
       }

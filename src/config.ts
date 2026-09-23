@@ -204,7 +204,8 @@ function findUnknownKeys(input: Record<string, unknown>): string[] {
     const value = input[section];
     if (!isPlainObject(value)) continue;
     for (const key of Object.keys(value)) {
-      if (!isAnnotation(key) && !known[section]!.includes(key)) warnings.push(unknownKeyMessage(section, key, known[section]!));
+      if (!isAnnotation(key) && !known[section]!.includes(key))
+        warnings.push(unknownKeyMessage(section, key, known[section]!));
     }
   }
   const routing = input["routing"];
@@ -360,7 +361,10 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
     const declaredKeys = isPlainObject(declared) ? Object.keys(declared) : [];
     for (const category of declaredKeys) {
       if (criteria === null || category in criteria) continue;
-      const expected = Object.keys(criteria).map((name) => JSON.stringify(name)).join(", ") || "(none)";
+      const expected =
+        Object.keys(criteria)
+          .map((name) => JSON.stringify(name))
+          .join(", ") || "(none)";
       errors.push(
         `routing.modelMapping[${JSON.stringify(category)}] is not a category of ` +
           `routing.questions[${JSON.stringify(routing.primaryQuestion)}]; expected one of ${expected}`,
@@ -388,9 +392,7 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
   } else {
     for (const [spec, chain] of Object.entries(chains)) {
       if (!Array.isArray(chain) || chain.length === 0 || !chain.every(isNonEmptyString)) {
-        errors.push(
-          `routing.fallbackChains[${JSON.stringify(spec)}] must be a non-empty array of non-empty strings`,
-        );
+        errors.push(`routing.fallbackChains[${JSON.stringify(spec)}] must be a non-empty array of non-empty strings`);
       }
     }
   }
@@ -602,7 +604,9 @@ export function loadConfig(
     }
 
     if (!isPlainObject(parsed)) {
-      errors.push(`${source.scope} config ${source.path}: expected a ${source.format === "yaml" ? "YAML" : "JSON"} object at the top level`);
+      errors.push(
+        `${source.scope} config ${source.path}: expected a ${source.format === "yaml" ? "YAML" : "JSON"} object at the top level`,
+      );
       continue;
     }
 

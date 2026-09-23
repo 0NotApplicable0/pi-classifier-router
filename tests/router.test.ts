@@ -44,9 +44,12 @@ test("an unknown category falls back to defaultCategory", () => {
 });
 
 test("an unmapped category with no default applies nothing", () => {
-  const decision = decide(routedConfig((config) => {
-    config.routing.defaultCategory = null;
-  }), { task_complexity: choice("enormous", 0.9) });
+  const decision = decide(
+    routedConfig((config) => {
+      config.routing.defaultCategory = null;
+    }),
+    { task_complexity: choice("enormous", 0.9) },
+  );
   assert.equal(decision.reason, "unmapped-category");
   assert.equal(decision.category, "enormous");
   assert.equal(decision.spec, null);
@@ -54,9 +57,13 @@ test("an unmapped category with no default applies nothing", () => {
 });
 
 test("isAvailable filtering picks the second chain entry", () => {
-  const decision = decide(routedConfig(), { task_complexity: choice("hard", 0.9) }, {
-    isAvailable: (spec) => spec !== "@slow",
-  });
+  const decision = decide(
+    routedConfig(),
+    { task_complexity: choice("hard", 0.9) },
+    {
+      isAvailable: (spec) => spec !== "@slow",
+    },
+  );
   assert.equal(decision.reason, "routed");
   assert.equal(decision.spec, "@slow");
   assert.equal(decision.apply, "@default");
@@ -64,9 +71,13 @@ test("isAvailable filtering picks the second chain entry", () => {
 });
 
 test("every candidate unavailable yields all-circuits-open", () => {
-  const decision = decide(routedConfig(), { task_complexity: choice("hard", 0.9) }, {
-    isAvailable: () => false,
-  });
+  const decision = decide(
+    routedConfig(),
+    { task_complexity: choice("hard", 0.9) },
+    {
+      isAvailable: () => false,
+    },
+  );
   assert.equal(decision.reason, "all-circuits-open");
   assert.equal(decision.spec, "@slow");
   assert.equal(decision.apply, null);
@@ -85,18 +96,24 @@ test("enabled: false short-circuits before the answers are touched", () => {
       throw new Error("answers must not be read when routing is disabled");
     },
   });
-  const decision = decide(routedConfig((config) => {
-    config.enabled = false;
-  }), trapped);
+  const decision = decide(
+    routedConfig((config) => {
+      config.enabled = false;
+    }),
+    trapped,
+  );
   assert.equal(decision.reason, "disabled");
   assert.equal(decision.apply, null);
   assert.deepEqual(decision.extra, {});
 });
 
 test("an empty question set yields no-questions", () => {
-  const decision = decide(routedConfig((config) => {
-    config.routing.questions = {};
-  }), {});
+  const decision = decide(
+    routedConfig((config) => {
+      config.routing.questions = {};
+    }),
+    {},
+  );
   assert.equal(decision.reason, "no-questions");
   assert.equal(decision.apply, null);
 });
@@ -118,24 +135,30 @@ test("an absent primary answer is missing-answer", () => {
 });
 
 test("extra carries the non-primary answers", () => {
-  const decision = decide(routedConfig((config) => {
-    config.routing.questions = {
-      ...config.routing.questions,
-      review_depth: { type: "noul", instructions: "Does this need a careful review?" },
-    };
-  }), {
-    task_complexity: choice("standard", 0.8),
-    review_depth: { type: "noul", noul: 0.7, confidence: 0.6 },
-  });
+  const decision = decide(
+    routedConfig((config) => {
+      config.routing.questions = {
+        ...config.routing.questions,
+        review_depth: { type: "noul", instructions: "Does this need a careful review?" },
+      };
+    }),
+    {
+      task_complexity: choice("standard", 0.8),
+      review_depth: { type: "noul", noul: 0.7, confidence: 0.6 },
+    },
+  );
   assert.equal(decision.reason, "routed");
   assert.deepEqual(Object.keys(decision.extra), ["review_depth"]);
   assert.equal(decision.extra.review_depth?.type, "noul");
 });
 
 test("dryRun keeps apply populated and notes it in the detail", () => {
-  const decision = decide(routedConfig((config) => {
-    config.dryRun = true;
-  }), { task_complexity: choice("standard", 0.8) });
+  const decision = decide(
+    routedConfig((config) => {
+      config.dryRun = true;
+    }),
+    { task_complexity: choice("standard", 0.8) },
+  );
   assert.equal(decision.reason, "routed");
   assert.equal(decision.apply, "@default");
   assert.match(decision.detail, /dry run/);

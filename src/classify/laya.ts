@@ -178,7 +178,8 @@ export function createLayaClassifier(config: LayaBackendConfig, deps: Classifier
       return;
     }
     const kind = record["kind"];
-    const code: ClassifierErrorCode = kind === "timeout" || kind === "unavailable" || kind === "protocol" ? kind : "unavailable";
+    const code: ClassifierErrorCode =
+      kind === "timeout" || kind === "unavailable" || kind === "protocol" ? kind : "unavailable";
     call.reject(
       new ClassifierError(BACKEND, code, `laya worker failed: ${String(record["error"] ?? "unknown error")}`),
     );
@@ -368,10 +369,7 @@ export function createLayaClassifier(config: LayaBackendConfig, deps: Classifier
 }
 
 /** Split an async byte/string stream into lines, tolerating chunk boundaries. */
-async function pump(
-  stream: AsyncIterable<Uint8Array | string>,
-  onLine: (line: string) => void,
-): Promise<void> {
+async function pump(stream: AsyncIterable<Uint8Array | string>, onLine: (line: string) => void): Promise<void> {
   let buffer = "";
   try {
     for await (const chunk of stream) {

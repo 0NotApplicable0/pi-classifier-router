@@ -219,10 +219,7 @@ test("maps 401 and 403 to auth", async () => {
     "auth",
   );
   assert.match(unauthorized.message, /401/);
-  await rejection(
-    createLayaHttpClassifier(layaConfig("/forbidden"), { env: {} }).classify("x", QUESTIONS),
-    "auth",
-  );
+  await rejection(createLayaHttpClassifier(layaConfig("/forbidden"), { env: {} }).classify("x", QUESTIONS), "auth");
 });
 
 test("maps 429 to unavailable and reports the status", async () => {
@@ -250,10 +247,7 @@ test("an unreachable endpoint is a transport failure", async () => {
 });
 
 test("maps a malformed answer body to protocol", async () => {
-  await rejection(
-    createLayaHttpClassifier(layaConfig("/garbage"), { env: {} }).classify("x", QUESTIONS),
-    "protocol",
-  );
+  await rejection(createLayaHttpClassifier(layaConfig("/garbage"), { env: {} }).classify("x", QUESTIONS), "protocol");
   await rejection(
     createLayaHttpClassifier(layaConfig("/no-answers"), { env: {} }).classify("x", QUESTIONS),
     "protocol",
