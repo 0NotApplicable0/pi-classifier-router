@@ -29,10 +29,19 @@ import {
   registerEvent,
   resolveModel,
   startTimer,
+  storedApiKey,
 } from "./host.ts";
 import { decide } from "./router.ts";
 import { ClassifierError } from "./types.ts";
-import type { Answer, ClassificationResult, Classifier, Decision, DecisionReason, RouterConfig } from "./types.ts";
+import type {
+  Answer,
+  ClassificationResult,
+  Classifier,
+  ClassifyOptions,
+  Decision,
+  DecisionReason,
+  RouterConfig,
+} from "./types.ts";
 
 const NOTIFY_PREFIX = "[class-router]";
 const HISTORY_LIMIT = 50;
@@ -460,12 +469,22 @@ async function classifyGuarded(
 
   try {
     return await Promise.race([
-      classifier.classify(prompt, config.routing.questions, { signal: controller.signal }),
+      classifier.classify(prompt, config.routing.questions, {
+        signal: controller.signal,
+        storedApiKey: storedKeyLookup(config, ctx),
+      }),
       hardGuard,
     ]);
   } finally {
     cancelGuard();
   }
+}
+
+/** The stored-credential fallback for the jev backend; laya has none. */
+function storedKeyLookup(config: RouterConfig, ctx: ExtensionContext): ClassifyOptions["storedApiKey"] {
+  const provider = config.jev.credentialProvider.trim();
+  if (config.backend !== "jev" || provider === "") return undefined;
+  return () => storedApiKey(ctx, provider);
 }
 
 // ---------------------------------------------------------------------------

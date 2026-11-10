@@ -91,6 +91,7 @@ export function defaultConfig(): RouterConfig {
       endpoint: "https://api.typesafe.ai/v1/systemone",
       model: "jev-latest",
       apiKeyEnvVar: "TYPESAFE_API_KEY",
+      credentialProvider: "typesafe",
       timeoutMs: 3000,
     },
     laya: {
@@ -429,8 +430,8 @@ function validateConfig(config: RouterConfig, input?: RouterConfigInput): string
   }
   if (!isHttpUrl(jev.endpoint)) errors.push(`jev.endpoint must be an http(s) URL, got ${describe(jev.endpoint)}`);
   if (!isNonEmptyString(jev.model)) errors.push(`jev.model must be a non-empty string, got ${describe(jev.model)}`);
-  if (typeof jev.apiKeyEnvVar !== "string") {
-    errors.push(`jev.apiKeyEnvVar must be a string, got ${describe(jev.apiKeyEnvVar)}`);
+  for (const key of ["apiKeyEnvVar", "credentialProvider"] as const) {
+    if (typeof jev[key] !== "string") errors.push(`jev.${key} must be a string, got ${describe(jev[key])}`);
   }
 
   const laya = config.laya;

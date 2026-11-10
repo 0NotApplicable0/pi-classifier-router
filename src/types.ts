@@ -93,6 +93,11 @@ export type ClassifierState = string | Record<string, unknown> | unknown[];
 
 export interface ClassifyOptions {
   signal?: AbortSignal;
+  /**
+   * Fallback bearer token, consulted only when the configured token variable
+   * is unset or blank. Resolves undefined when there is no stored credential.
+   */
+  storedApiKey?: () => Promise<string | undefined>;
 }
 
 /**
@@ -140,6 +145,11 @@ export interface JevBackendConfig {
   model: string;
   /** Environment variable holding the bearer token. */
   apiKeyEnvVar: string;
+  /**
+   * Host credential-store provider whose key is used when `apiKeyEnvVar` is
+   * unset, e.g. `typesafe` after `/login typesafe`. Blank disables the lookup.
+   */
+  credentialProvider: string;
   timeoutMs: number;
 }
 

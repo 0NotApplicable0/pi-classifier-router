@@ -102,7 +102,13 @@ after(async () => {
 });
 
 function config(path: string, timeoutMs = 2000): JevBackendConfig {
-  return { endpoint: `${endpoint}${path}`, model: "jev-test-model", apiKeyEnvVar: TOKEN_VAR, timeoutMs };
+  return {
+    endpoint: `${endpoint}${path}`,
+    model: "jev-test-model",
+    apiKeyEnvVar: TOKEN_VAR,
+    credentialProvider: "",
+    timeoutMs,
+  };
 }
 
 function classifier(path: string, timeoutMs = 2000) {
@@ -192,7 +198,13 @@ test("a caller abort wins over the timeout budget", async () => {
 
 test("an unset token variable makes jev unavailable without a request", async () => {
   const jev = createJevClassifier(
-    { endpoint: `${endpoint}/ok`, model: "jev-test-model", apiKeyEnvVar: MISSING_VAR, timeoutMs: 2000 },
+    {
+      endpoint: `${endpoint}/ok`,
+      model: "jev-test-model",
+      apiKeyEnvVar: MISSING_VAR,
+      credentialProvider: "",
+      timeoutMs: 2000,
+    },
     { env: {} },
   );
   const before = captured.length;

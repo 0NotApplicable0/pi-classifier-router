@@ -30,10 +30,12 @@ with a notification.
    ```
 
 2. **Give it a classifier.** The default backend is Jev, which needs a TypeSafe
-   API key (see [docs.typesafe.ai](https://docs.typesafe.ai)):
+   API key (see [docs.typesafe.ai](https://docs.typesafe.ai)). Either store it
+   in the host's credential store, or export it:
 
    ```bash
-   export TYPESAFE_API_KEY=...
+   /login typesafe                 # inside pi/omp: stored, no environment variable needed
+   export TYPESAFE_API_KEY=...     # or: environment variable, which takes precedence
    ```
 
    With Jev, the text of each classified prompt is sent to TypeSafe (see
@@ -349,11 +351,14 @@ classifier; sessions with different configs each get their own.
 | `endpoint` | `https://api.typesafe.ai/v1/systemone` | System-One evaluation endpoint |
 | `model` | `jev-latest` | model alias sent in the request body |
 | `apiKeyEnvVar` | `TYPESAFE_API_KEY` | environment variable holding the bearer token |
+| `credentialProvider` | `typesafe` | host credential-store provider used when `apiKeyEnvVar` is unset; blank disables the lookup |
 | `timeoutMs` | `3000` | time allowed per classification |
 
-The token is read from the named environment variable, sent as
-`Authorization: Bearer <token>`, and never logged or included in errors. A
-missing token makes Jev `unavailable`, and the session keeps its model.
+The token is read from the named environment variable or, when that is unset,
+from the host's stored credential for `credentialProvider`
+(`ctx.modelRegistry.getApiKeyForProvider`, filled by `/login typesafe`). It is
+sent as `Authorization: Bearer <token>`, and never logged or included in
+errors. A missing token makes Jev `unavailable`, and the session keeps its model.
 
 #### Privacy
 

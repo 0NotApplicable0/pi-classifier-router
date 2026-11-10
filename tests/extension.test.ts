@@ -311,6 +311,92 @@ test("routes a confident hard answer to the mapped model and records the decisio
   }
 });
 
+// ---------------------------------------------------------------------------
+// Stored host credential
+//
+// When the token variable is unset, the jev key comes from the host's own
+// credential store (`modelRegistry.getApiKeyForProvider`), so a `/login` key
+// works without exporting it into the environment.
+// ---------------------------------------------------------------------------
+
+const UNSET_TOKEN_VAR = "CLASS_ROUTER_TEST_UNSET_TOKEN";
+delete process.env[UNSET_TOKEN_VAR];
+
+function withStoredKey(h: Harness, keys: Record<string, string>): string[] {
+  const asked: string[] = [];
+  (h.fake.ctx as unknown as Record<string, unknown>)["modelRegistry"] = {
+    getApiKeyForProvider: async (provider: string) => {
+      asked.push(provider);
+      return keys[provider];
+    },
+  };
+  return asked;
+}
+
+test("an unset token variable falls back to the host's stored credential", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, { jev: { endpoint: url, apiKeyEnvVar: UNSET_TOKEN_VAR, timeoutMs: 2000 } }),
+  );
+  try {
+    const asked = withStoredKey(h, { typesafe: "stored-key-never-real" });
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+
+    assert.deepEqual(asked, ["typesafe"]);
+    assert.equal(h.stub.requests.length, 1);
+    assert.equal(h.stub.requests[0]!.headers["authorization"], "Bearer stored-key-never-real");
+    assert.deepEqual(h.fake.state.setModelCalls, [{ id: "slow-model", provider: "test" }]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a set token variable wins over the stored credential", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url));
+  try {
+    const asked = withStoredKey(h, { typesafe: "stored-key-never-real" });
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+
+    assert.deepEqual(asked, []);
+    assert.equal(h.stub.requests[0]!.headers["authorization"], `Bearer ${TOKEN}`);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a blank credentialProvider never reads the store and leaves jev unavailable", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, {
+      jev: { endpoint: url, apiKeyEnvVar: UNSET_TOKEN_VAR, credentialProvider: "", timeoutMs: 2000 },
+    }),
+  );
+  try {
+    const asked = withStoredKey(h, { typesafe: "stored-key-never-real" });
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+
+    assert.deepEqual(asked, []);
+    assert.equal(h.stub.requests.length, 0);
+    assert.equal(h.fake.state.setModelCalls.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("no token variable and no stored credential sends nothing", async () => {
+  const h = await harness({ answers: choice("hard", 0.92) }, (url) =>
+    baseConfig(url, { jev: { endpoint: url, apiKeyEnvVar: UNSET_TOKEN_VAR, timeoutMs: 2000 } }),
+  );
+  try {
+    const asked = withStoredKey(h, {});
+    await h.fake.emit("before_agent_start", { prompt: PROMPT }, h.ctx);
+
+    assert.deepEqual(asked, ["typesafe"]);
+    assert.equal(h.stub.requests.length, 0);
+    assert.equal(h.fake.state.setModelCalls.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("dryRun classifies and appends a decision without ever calling setModel", async () => {
   const h = await harness({ answers: choice("hard", 0.92) }, (url) => baseConfig(url, { dryRun: true }));
   try {

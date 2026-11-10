@@ -6,8 +6,9 @@
  * configured and present), `Content-Type: application/json`, and body
  * `{ state, model?, questions }`; response `{ model?, answers, usage? }`.
  *
- * The bearer token is read from the configured environment variable and is
- * never logged or embedded in errors. Every request is bounded by `timeoutMs`,
+ * The bearer token is read from the configured environment variable, falling
+ * back to the caller's `storedApiKey` when the variable is unset; it is never
+ * logged or embedded in errors. Every request is bounded by `timeoutMs`,
  * composed with the caller's own signal so either side can abort, and the
  * timer is always cleared.
  */
@@ -64,10 +65,14 @@ export function createHttpClassifier(options: HttpClassifierOptions, deps: Class
       questions: Questions,
       classifyOptions?: ClassifyOptions,
     ): Promise<ClassificationResult> {
-      const bearer = token();
       const envVar = options.apiKeyEnvVar;
+      let bearer = token();
+      if (bearer === "" && envVar.trim() !== "" && classifyOptions?.storedApiKey !== undefined) {
+        bearer = ((await classifyOptions.storedApiKey()) ?? "").trim();
+      }
       if (bearer === "" && envVar.trim() !== "") {
-        throw new ClassifierError(backend, "unavailable", `${envVar} is not set; ${backend} is unavailable`);
+        const fallback = classifyOptions?.storedApiKey !== undefined ? " and no stored credential was found" : "";
+        throw new ClassifierError(backend, "unavailable", `${envVar} is not set${fallback}; ${backend} is unavailable`);
       }
 
       const headers: Record<string, string> = { "Content-Type": "application/json" };

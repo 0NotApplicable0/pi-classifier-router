@@ -235,6 +235,25 @@ export function hasConfiguredAuth(
 }
 
 /**
+ * The host's stored API key for a credential provider (`/login <provider>`),
+ * via `ctx.modelRegistry.getApiKeyForProvider`, present on both hosts.
+ * Undefined when the host has none, cannot say, or throws.
+ */
+export async function storedApiKey(ctx: unknown, provider: string): Promise<string | undefined> {
+  if (!isObject(ctx)) return undefined;
+  const registry = ctx["modelRegistry"];
+  if (!isObject(registry)) return undefined;
+  const lookup = registry["getApiKeyForProvider"];
+  if (!isFunction(lookup)) return undefined;
+  try {
+    const key = await lookup.call(registry, provider);
+    return typeof key === "string" && key.trim() !== "" ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Apply a model to the session.
  *
  * The one cast in this adapter: `HostModel` is the structural identity both

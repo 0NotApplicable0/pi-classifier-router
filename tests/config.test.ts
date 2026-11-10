@@ -136,6 +136,7 @@ const INVALID_INPUTS: Array<[string, unknown]> = [
   ["a jev endpoint with a non-http scheme", { jev: { endpoint: "file:///etc/passwd" } }],
   ["an empty jev model", { jev: { model: "" } }],
   ["a non-string jev apiKeyEnvVar", { jev: { apiKeyEnvVar: 5 } }],
+  ["a non-string jev credentialProvider", { jev: { credentialProvider: 5 } }],
   ["a non-positive laya warmupTimeoutMs", { laya: { warmupTimeoutMs: 0 } }],
   ["an empty laya pythonBin", { laya: { pythonBin: " " } }],
   ["a non-boolean laya preload", { laya: { preload: "yes" } }],
